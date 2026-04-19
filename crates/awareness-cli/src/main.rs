@@ -13,11 +13,11 @@ use awareness_cli::budget::BudgetController;
 use awareness_cli::capture;
 use awareness_cli::config::{Config, RunArgs};
 use awareness_cli::dedup::{PerceptualDedup, TextDedup};
-use awareness_cli::eval::{AlertPrompt, spawn_eval_loop};
+use awareness_cli::eval::{spawn_eval_loop, AlertPrompt};
 use awareness_cli::flow::FlowState;
-use awareness_cli::memory::{MemoryEntry, MemoryRing};
 use awareness_cli::gate::{self, GateAction, GateDecision, GateState};
 use awareness_cli::jsonl::JsonlWriter;
+use awareness_cli::memory::{MemoryEntry, MemoryRing};
 use awareness_cli::ocr;
 use awareness_cli::tts::TtsConfig;
 use awareness_cli::whisper::WhisperEngine;
@@ -32,11 +32,21 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Run(RunArgs),
+    /// Compute go/no-go metrics from a directory of JSONL run logs.
+    /// Thin wrapper over scripts/analyze_runs.py (keeps the heavy stats in
+    /// Python so the Rust dep tree doesn't balloon).
     Analyze {
-        #[arg(long, default_value = "data/phase_poc/runs.jsonl")]
-        runs: std::path::PathBuf,
-        #[arg(long, default_value = "data/phase_poc/ratings.jsonl")]
-        ratings: std::path::PathBuf,
+        /// Directory of JSONL run files. Default matches the Run default
+        /// output_dir.
+        #[arg(long, default_value = "data/phase_poc")]
+        runs_dir: std::path::PathBuf,
+        /// Optional markdown report output path.
+        #[arg(long)]
+        output_md: Option<std::path::PathBuf>,
+        /// Path to the analysis script. Searched as given, and relative to
+        /// the repo root layout (../../scripts/analyze_runs.py).
+        #[arg(long, default_value = "scripts/analyze_runs.py")]
+        script: std::path::PathBuf,
     },
 }
 
@@ -62,14 +72,221 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Run(args) => run(args).await?,
-        Commands::Analyze { runs, ratings } => {
-            println!(
-                "Use scripts/analyze_runs.py for analysis.\nruns={runs:?}\nratings={ratings:?}"
-            );
+        Commands::Analyze { runs_dir, output_md, script } => {
+            analyze(runs_dir, output_md, script)?;
         }
     }
 
     Ok(())
+}
+
+/// Resolve the analysis script to an existing path. Tries the given path,
+/// then the usual repo layouts (running from the crate dir vs. workspace
+/// root). Returns an error if none exist.
+fn resolve_script(script: &std::path::Path) -> Result<std::path::PathBuf> {
+    let candidates: &[std::path::PathBuf] = &[
+        script.to_path_buf(),
+        std::path::PathBuf::from("..").join("..").join(script),
+    ];
+    for c in candidates {
+        if c.exists() {
+            return Ok(c.clone());
+        }
+    }
+    anyhow::bail!(
+        "analysis script not found. Tried: {}",
+        candidates
+            .iter()
+            .map(|p| format!("{:?}", p))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
+
+fn analyze(
+    runs_dir: std::path::PathBuf,
+    output_md: Option<std::path::PathBuf>,
+    script: std::path::PathBuf,
+) -> Result<()> {
+    let script_path = resolve_script(&script)?;
+    if !runs_dir.exists() {
+        anyhow::bail!("runs_dir {:?} does not exist", runs_dir);
+    }
+
+    let mut cmd = std::process::Command::new("python3");
+    cmd.arg(&script_path)
+        .arg("--runs-dir")
+        .arg(&runs_dir);
+    if let Some(md) = output_md.as_deref() {
+        cmd.arg("--output-md").arg(md);
+    }
+
+    let status = cmd.status().map_err(|e| {
+        anyhow::anyhow!(
+            "failed to launch python3 (install python3 or pass --script): {e}"
+        )
+    })?;
+
+    if !status.success() {
+        anyhow::bail!("analyze script exited with {status}");
+    }
+    Ok(())
+}
+
+/// Handle a single `GateAction::Send` decision: budget reserve → API call →
+/// commit/refund → alert dispatch. Factored out of `run()` so the main loop
+/// body stays shallow. Returns `(api_response, api_latency_ms)` for the
+/// JSONL log entry.
+#[allow(clippy::too_many_arguments)]
+async fn process_send(
+    tick_id: u64,
+    event: &ContextEvent,
+    decision: &GateDecision,
+    backend: &Backend,
+    budget: &Arc<Mutex<BudgetController>>,
+    latest_png: &Arc<Mutex<Option<Arc<Vec<u8>>>>>,
+    memory: &Arc<Mutex<MemoryRing>>,
+    flow_state: &Arc<Mutex<FlowState>>,
+    alert_tx: &tokio::sync::mpsc::Sender<AlertPrompt>,
+    cfg: &Config,
+    last_api_call_at: &mut Option<std::time::Instant>,
+) -> (Option<FilterResponse>, Option<u64>) {
+    // Global min-interval cooldown. Emotional events bypass.
+    let cooldown_ok = decision.reason == "emotional"
+        || last_api_call_at.is_none_or(|t| {
+            t.elapsed() >= std::time::Duration::from_secs(cfg.min_send_interval_seconds)
+        });
+    if !cooldown_ok {
+        tracing::debug!(
+            "tick={tick_id} send suppressed by min-interval cooldown ({}s)",
+            cfg.min_send_interval_seconds
+        );
+        return (None, None);
+    }
+
+    // Race-safe budget gate: reserve a conservative upper bound BEFORE the
+    // API call, commit/refund afterwards. Concurrent ticks can't both pass
+    // because the first reservation is already charged against spent_usd.
+    let reservation = {
+        let mut b = budget.lock().await;
+        match b.try_reserve(backend.max_cost_estimate_usd()) {
+            Ok(r) => r,
+            Err(_) => {
+                tracing::warn!("Budget exhausted — API disabled");
+                return (None, None);
+            }
+        }
+    };
+
+    let t1 = std::time::Instant::now();
+    let img_bytes: Option<Arc<Vec<u8>>> = if backend.needs_image() {
+        latest_png.lock().await.clone()
+    } else {
+        None
+    };
+    let img_ref: Option<&[u8]> = img_bytes.as_deref().map(|v| v.as_slice());
+    let mem_str = memory.lock().await.to_prompt_lines();
+
+    let resp = match backend.analyze(event, img_ref, &mem_str, &decision.reason).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("API: {e}");
+            // Return the reservation — the call never happened, so the
+            // reserved budget must be released.
+            budget.lock().await.refund(reservation);
+            return (None, None);
+        }
+    };
+
+    let ms = t1.elapsed().as_millis() as u64;
+    *last_api_call_at = Some(std::time::Instant::now());
+
+    // Reconcile the reservation with the real cost.
+    {
+        let mut b = budget.lock().await;
+        b.commit(reservation, resp.cost_usd);
+        if b.spent() > cfg.budget_usd_daily {
+            // Actual cost pushed us past the limit — shouldn't happen with
+            // a conservative estimate, but if it does, exit cleanly after
+            // this alert is dispatched (the user just paid for it).
+            tracing::error!(
+                "Daily budget exceeded after commit: ${:.4} of ${:.4} — exiting",
+                b.spent(), cfg.budget_usd_daily
+            );
+            b.flush();
+            println!("\nBudget cap reached. Exiting.");
+            std::process::exit(2);
+        }
+    }
+
+    // If the model's JSON failed to parse, cost was still spent but the
+    // response carries no signal — log, skip alert dispatch and memory.
+    if let Some(msg) = &resp.parse_error {
+        tracing::error!(
+            "tick={tick_id} API returned unparseable JSON: {msg}; skipping alert"
+        );
+        return (Some(resp), Some(ms));
+    }
+
+    // Force alert when gate fires emotional — user asked for commentary
+    // whenever frustration keywords hit, regardless of the model's verdict.
+    let force_alert = decision.reason == "emotional";
+    let mut resp = resp;
+    if force_alert && !resp.should_alert {
+        resp.should_alert = true;
+        if resp.alert_type == "none" {
+            resp.alert_type = "emotional".to_string();
+        }
+    }
+    if resp.should_alert && resp.quick_message.trim().is_empty() {
+        tracing::warn!(
+            "tick={tick_id} model returned empty quick_message; using local fallback (reason={})",
+            decision.reason
+        );
+        resp.quick_message = format!(
+            "Sinal local ({}) em app {}.",
+            decision.reason,
+            event.app.as_deref().unwrap_or("desconhecida"),
+        );
+    }
+
+    {
+        let b = budget.lock().await;
+        tracing::info!(
+            "tick={tick_id} alert={} type={} cost=${:.6} left=${:.4} msg={:?}",
+            resp.should_alert, resp.alert_type,
+            resp.cost_usd, b.remaining(),
+            resp.quick_message,
+        );
+    }
+
+    memory.lock().await.push(MemoryEntry {
+        timestamp: chrono::Utc::now(),
+        app: event.app.clone(),
+        alert_type: resp.alert_type.clone(),
+        should_alert: resp.should_alert,
+        quick_message: resp.quick_message.clone(),
+    });
+
+    if resp.should_alert {
+        let in_flow = flow_state.lock().await.in_flow();
+        let suppress = in_flow && resp.urgency != "high";
+        if suppress {
+            tracing::info!(
+                "flow_state: suppressing {} urgency alert during focus",
+                resp.urgency
+            );
+        } else {
+            let _ = alert_tx.try_send(AlertPrompt {
+                tick_id,
+                event: event.clone(),
+                gate_decision: decision.clone(),
+                api_response: resp.clone(),
+            });
+        }
+    }
+
+    (Some(resp), Some(ms))
 }
 
 async fn run(args: RunArgs) -> Result<()> {
@@ -90,8 +307,13 @@ async fn run(args: RunArgs) -> Result<()> {
         .open(&log_path)?;
     let (file_writer, _log_guard) = tracing_appender::non_blocking(log_file);
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&cfg.log_level));
+    // Prefer RUST_LOG if it's set (standard tracing override); fall back to
+    // the validated cfg.log_level. Log which source won so debugging filter
+    // surprises doesn't require reading source.
+    let (filter, filter_source) = match EnvFilter::try_from_default_env() {
+        Ok(f) => (f, "RUST_LOG"),
+        Err(_) => (EnvFilter::new(&cfg.log_level), "cfg.log_level"),
+    };
 
     tracing_subscriber::registry()
         .with(filter)
@@ -100,10 +322,11 @@ async fn run(args: RunArgs) -> Result<()> {
         .init();
 
     tracing::info!(
-        "awareness-cli starting — budget ${:.2}/day, output {:?}, log {:?}",
+        "awareness-cli starting — budget ${:.2}/day, output {:?}, log {:?}, log_filter_source={}",
         cfg.budget_usd_daily,
         cfg.output_dir,
         log_path,
+        filter_source,
     );
     tracing::info!(
         "features: full={}",
@@ -305,122 +528,11 @@ async fn run(args: RunArgs) -> Result<()> {
                 );
 
                 let (api_response, api_ms) = if decision.action == GateAction::Send {
-                    // Global min-interval cooldown. Emotional events bypass.
-                    let cooldown_ok = decision.reason == "emotional"
-                        || last_api_call_at.map_or(true, |t| {
-                            t.elapsed()
-                                >= std::time::Duration::from_secs(cfg.min_send_interval_seconds)
-                        });
-                    if !cooldown_ok {
-                        tracing::debug!(
-                            "tick={tick_id} send suppressed by min-interval cooldown ({}s)",
-                            cfg.min_send_interval_seconds
-                        );
-                        (None, None)
-                    } else {
-                    let b = budget.lock().await;
-                        if b.remaining() < 0.0001 {
-                            tracing::warn!("Budget exhausted — API disabled");
-                            (None, None)
-                        } else {
-                            drop(b);
-                            let t1 = std::time::Instant::now();
-                            // Vision backend needs the latest PNG. Clone the
-                            // Arc out of the mutex so we don't hold the lock
-                            // across the API request.
-                            let img_bytes: Option<Arc<Vec<u8>>> = if backend.needs_image() {
-                                latest_png.lock().await.clone()
-                            } else {
-                                None
-                            };
-                            let img_ref: Option<&[u8]> =
-                                img_bytes.as_deref().map(|v| v.as_slice());
-                            let mem_str = memory.lock().await.to_prompt_lines();
-                            match backend.analyze(&event, img_ref, &mem_str, &decision.reason).await {
-                                Ok(resp) => {
-                                    let ms = t1.elapsed().as_millis() as u64;
-                                    last_api_call_at = Some(std::time::Instant::now());
-                                    let mut b = budget.lock().await;
-                                    match b.try_spend(resp.cost_usd) {
-                                        Ok(_) => {
-                                            // If the model's JSON failed to parse, cost was still
-                                            // spent (deducted above), but treat the response as
-                                            // signal-less: skip alert dispatch and memory update.
-                                            if let Some(msg) = &resp.parse_error {
-                                                tracing::error!(
-                                                    "tick={tick_id} API returned unparseable JSON: {msg}; skipping alert"
-                                                );
-                                                (Some(resp), Some(ms))
-                                            } else {
-                                            // Force alert when gate fires emotional — user asked
-                                            // for commentary whenever frustration keywords hit,
-                                            // regardless of the model's own should_alert verdict.
-                                            let force_alert = decision.reason == "emotional";
-                                            let mut resp = resp;
-                                            if force_alert && !resp.should_alert {
-                                                resp.should_alert = true;
-                                                if resp.alert_type == "none" {
-                                                    resp.alert_type = "emotional".to_string();
-                                                }
-                                            }
-                                            // Guarantee quick_message on alert. Vision/text
-                                            // prompts already enforce it, but if the model
-                                            // returns empty and we forced the alert, fall back
-                                            // to a minimal description derived from local state.
-                                            if resp.should_alert && resp.quick_message.trim().is_empty() {
-                                                resp.quick_message = format!(
-                                                    "Sinal local ({}) em app {}.",
-                                                    decision.reason,
-                                                    event.app.as_deref().unwrap_or("desconhecida"),
-                                                );
-                                            }
-                                            tracing::info!(
-                                                "tick={tick_id} alert={} type={} cost=${:.6} left=${:.4} msg={:?}",
-                                                resp.should_alert, resp.alert_type,
-                                                resp.cost_usd, b.remaining(),
-                                                resp.quick_message,
-                                            );
-                                            memory.lock().await.push(MemoryEntry {
-                                                timestamp: chrono::Utc::now(),
-                                                app: event.app.clone(),
-                                                alert_type: resp.alert_type.clone(),
-                                                should_alert: resp.should_alert,
-                                                quick_message: resp.quick_message.clone(),
-                                            });
-                                            if resp.should_alert {
-                                                let in_flow = flow_state.lock().await.in_flow();
-                                                let suppress = in_flow && resp.urgency != "high";
-                                                if suppress {
-                                                    tracing::info!(
-                                                        "flow_state: suppressing {} urgency alert during focus",
-                                                        resp.urgency
-                                                    );
-                                                } else {
-                                                    let _ = alert_tx.try_send(AlertPrompt {
-                                                        tick_id,
-                                                        event: event.clone(),
-                                                        gate_decision: decision.clone(),
-                                                        api_response: resp.clone(),
-                                                    });
-                                                }
-                                            }
-                                            (Some(resp), Some(ms))
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("{e}");
-                                            println!("\nBudget cap reached. Exiting.");
-                                            std::process::exit(2);
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!("API: {e}");
-                                    (None, None)
-                                }
-                            }
-                        }
-                    }
+                    process_send(
+                        tick_id, &event, &decision, &backend, &budget,
+                        &latest_png, &memory, &flow_state, &alert_tx,
+                        &cfg, &mut last_api_call_at,
+                    ).await
                 } else {
                     (None, None)
                 };
@@ -439,7 +551,10 @@ async fn run(args: RunArgs) -> Result<()> {
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                let b = budget.lock().await;
+                // Drain any pending write-batch so mid-batch spends aren't
+                // lost to a crash between now and the next natural flush.
+                let mut b = budget.lock().await;
+                b.flush();
                 println!(
                     "\nShutdown. Ticks: {tick_id} | Cost: ${:.4} | Remaining: ${:.4}",
                     b.spent(), b.remaining()

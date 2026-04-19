@@ -220,7 +220,7 @@ Responde SEMPRE JSON válido neste schema exacto:
 ///         small chat text reliably.
 /// Sharp = gpt-4o + high detail. ~$0.005-0.008/call. Reads code, small fonts,
 ///         dense UI. Use when the content likely requires precision.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VisionTier {
     Fast,
     Sharp,
@@ -251,19 +251,19 @@ impl VisionTier {
 /// Pick a vision tier based on what's likely in the image.
 ///
 /// Sharp when:
-///   - app is an editor / IDE (code requires legible small text),
+///   - app matches one of `sharp_apps` (editors/IDEs need legible small text),
 ///   - gate reason is "emotional" or "text_changed" (user just did something
 ///     specific the model must look at closely),
 ///   - extracted text is large (>3000 chars → dense UI like Teams/Chrome).
+///
 /// Fast otherwise.
-pub fn pick_tier(event: &ContextEvent, reason: &str) -> VisionTier {
-    const SHARP_APPS: &[&str] = &[
-        "vscode", "cursor", "code", "intellij", "pycharm", "webstorm",
-        "sublime", "atom", "nvim", "neovim", "text_editor",
-    ];
+///
+/// `sharp_apps` is expected to be pre-lowercased (callers use the list from
+/// Config which is normalised at load time).
+pub fn pick_tier(event: &ContextEvent, reason: &str, sharp_apps: &[String]) -> VisionTier {
     if let Some(app) = event.app.as_deref() {
         let lower = app.to_lowercase();
-        if SHARP_APPS.iter().any(|a| lower.contains(a)) {
+        if sharp_apps.iter().any(|a| lower.contains(a.as_str())) {
             return VisionTier::Sharp;
         }
     }
@@ -281,6 +281,7 @@ pub fn pick_tier(event: &ContextEvent, reason: &str) -> VisionTier {
 pub struct VisionClient {
     http: Client,
     api_key: String,
+    sharp_apps: Vec<String>,
 }
 
 impl VisionClient {
@@ -292,6 +293,7 @@ impl VisionClient {
         Ok(Self {
             http,
             api_key: cfg.openai_api_key.clone(),
+            sharp_apps: cfg.vision_sharp_apps.clone(),
         })
     }
 
@@ -305,7 +307,7 @@ impl VisionClient {
         memory: &str,
         reason: &str,
     ) -> Result<FilterResponse> {
-        let tier = pick_tier(event, reason);
+        let tier = pick_tier(event, reason, &self.sharp_apps);
         tracing::info!("vision tier={:?} reason={reason}", tier);
 
         let event_json = serde_json::to_string(event)
@@ -434,5 +436,59 @@ impl VisionClient {
         }
 
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("all retries exhausted")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn event_with(app: Option<&str>, text_chars: usize) -> ContextEvent {
+        ContextEvent {
+            timestamp: Utc::now(),
+            app: app.map(|s| s.to_string()),
+            window_title: None,
+            screen_text_excerpt: "x".repeat(text_chars),
+            mic_text_recent: None,
+            duration_on_app_seconds: 0,
+            history_apps_30min: vec![],
+            mic_text_new: false,
+        }
+    }
+
+    #[test]
+    fn pick_tier_sharp_when_app_matches_list() {
+        let sharp = vec!["vscode".to_string(), "zed".to_string()];
+        let ev = event_with(Some("VSCode - main.rs"), 100);
+        assert_eq!(pick_tier(&ev, "periodic", &sharp), VisionTier::Sharp);
+    }
+
+    #[test]
+    fn pick_tier_fast_for_non_sharp_app_and_short_text() {
+        let sharp = vec!["vscode".to_string()];
+        let ev = event_with(Some("slack"), 100);
+        assert_eq!(pick_tier(&ev, "periodic", &sharp), VisionTier::Fast);
+    }
+
+    #[test]
+    fn pick_tier_sharp_on_large_text_even_without_app_match() {
+        let sharp: Vec<String> = vec![];
+        let ev = event_with(Some("chrome"), 4000);
+        assert_eq!(pick_tier(&ev, "periodic", &sharp), VisionTier::Sharp);
+    }
+
+    #[test]
+    fn pick_tier_sharp_on_emotional_reason() {
+        let sharp: Vec<String> = vec![];
+        let ev = event_with(Some("slack"), 100);
+        assert_eq!(pick_tier(&ev, "emotional", &sharp), VisionTier::Sharp);
+    }
+
+    #[test]
+    fn pick_tier_handles_empty_sharp_list_gracefully() {
+        let sharp: Vec<String> = vec![];
+        let ev = event_with(Some("vscode"), 100);
+        assert_eq!(pick_tier(&ev, "periodic", &sharp), VisionTier::Fast);
     }
 }

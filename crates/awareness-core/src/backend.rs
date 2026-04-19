@@ -52,6 +52,21 @@ impl Backend {
             Backend::Vision(_) => "vision",
         }
     }
+
+    /// Conservative upper bound on the USD cost of a single `analyze` call.
+    /// Used by the budget controller to reserve ahead of the call so
+    /// concurrent ticks can't both race past a "near-exhausted" check.
+    /// After the call, the reservation is reconciled with the real cost.
+    ///
+    /// Text backend: gpt-4o-mini, ~500 input tokens + 300 output tokens ≈
+    /// $0.0003, rounded up generously. Vision sharp tier can hit ~$0.008,
+    /// rounded up to $0.02 to cover large images + retries.
+    pub fn max_cost_estimate_usd(&self) -> f64 {
+        match self {
+            Backend::Text(_) => 0.005,
+            Backend::Vision(_) => 0.02,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]

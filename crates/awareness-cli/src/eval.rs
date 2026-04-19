@@ -137,6 +137,14 @@ async fn handle_prompt(
         tracing::error!("eval stdin read error: {msg}");
     }
     let rating_str = rating_from_outcome(&outcome);
+    if rating_str == "invalid" {
+        if let PromptOutcome::Input(raw) = &outcome {
+            println!(
+                "\x1b[33m(unrecognised input {:?}; logged as 'invalid' — use u/n/a or <enter>)\x1b[0m",
+                raw.trim()
+            );
+        }
+    }
 
     let rating = Rating {
         tick_id: prompt.tick_id,
@@ -157,14 +165,22 @@ async fn handle_prompt(
 
 /// Map a stdin outcome to the persisted rating string. Pure — used both
 /// from the live loop and from tests.
+///
+/// Empty input (just Enter) → "skipped". Non-empty input that doesn't match
+/// a rating letter → "invalid" so we can tell, after the fact, that the user
+/// typed something unexpected rather than deliberately skipping.
 fn rating_from_outcome(outcome: &PromptOutcome) -> &'static str {
     match outcome {
-        PromptOutcome::Input(s) => match s.trim() {
-            "u" => "useful",
-            "n" => "not_useful",
-            "a" => "annoying",
-            _ => "skipped",
-        },
+        PromptOutcome::Input(s) => {
+            let trimmed = s.trim();
+            match trimmed {
+                "u" => "useful",
+                "n" => "not_useful",
+                "a" => "annoying",
+                "" => "skipped",
+                _ => "invalid",
+            }
+        }
         PromptOutcome::Timeout => "timeout",
         PromptOutcome::Eof => "skipped",
         PromptOutcome::IoError(_) => "error",
@@ -240,7 +256,15 @@ mod tests {
     fn rating_map_empty_input_is_skipped() {
         assert_eq!(rating_from_outcome(&PromptOutcome::Input("".into())), "skipped");
         assert_eq!(rating_from_outcome(&PromptOutcome::Input("  \n".into())), "skipped");
-        assert_eq!(rating_from_outcome(&PromptOutcome::Input("x".into())), "skipped");
+    }
+
+    #[test]
+    fn rating_map_unknown_input_is_invalid_not_skipped() {
+        // Non-empty input that doesn't match a letter must be distinguishable
+        // from a deliberate skip so analysis can flag accidental rubbish input.
+        assert_eq!(rating_from_outcome(&PromptOutcome::Input("x".into())), "invalid");
+        assert_eq!(rating_from_outcome(&PromptOutcome::Input("yes".into())), "invalid");
+        assert_eq!(rating_from_outcome(&PromptOutcome::Input("1".into())), "invalid");
     }
 
     #[test]

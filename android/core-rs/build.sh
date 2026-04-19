@@ -14,6 +14,11 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="$HERE/../app/src/main/jniLibs"
 
+# cd into the crate so `cargo` picks the right package from the workspace
+# (otherwise it would try to build the whole workspace, including the
+# Linux-only awareness-cli which fails without the system libs).
+cd "$HERE"
+
 cargo ndk \
   -t arm64-v8a \
   -t armeabi-v7a \

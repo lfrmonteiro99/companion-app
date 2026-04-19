@@ -1,0 +1,8 @@
+data/
+models/
+target/
+.env
+*.png
+*.wav
+*.jsonl
+plans/

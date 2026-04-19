@@ -61,4 +61,34 @@ mod tests {
     fn empty_ring_produces_empty_string() {
         assert_eq!(MemoryRing::new(5).to_prompt_lines(), "");
     }
+
+    #[test]
+    fn push_to_exactly_full_then_one_more_evicts_oldest() {
+        let mut r = MemoryRing::new(2);
+        r.push(mk("a"));
+        r.push(mk("b"));
+        r.push(mk("c"));
+        let s = r.to_prompt_lines();
+        assert!(!s.contains("\"a\""), "oldest must be evicted: {s}");
+        assert!(s.contains("\"b\"") && s.contains("\"c\""));
+    }
+
+    #[test]
+    fn capacity_one_keeps_only_latest() {
+        let mut r = MemoryRing::new(1);
+        r.push(mk("first"));
+        r.push(mk("second"));
+        r.push(mk("third"));
+        let s = r.to_prompt_lines();
+        assert!(s.contains("\"third\""));
+        assert!(!s.contains("\"first\"") && !s.contains("\"second\""));
+    }
+
+    #[test]
+    fn to_prompt_lines_yields_one_line_per_entry() {
+        let mut r = MemoryRing::new(5);
+        for i in 0..3 { r.push(mk(&i.to_string())); }
+        let s = r.to_prompt_lines();
+        assert_eq!(s.lines().count(), 3, "expected one line per entry, got {s:?}");
+    }
 }

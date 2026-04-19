@@ -20,3 +20,12 @@ text_change_cooldown_seconds = 6
 # Minimum wall-clock interval between API sends, across all gate rules.
 # "emotional" events bypass this cooldown.
 min_send_interval_seconds = 15
+
+[vision]
+# Apps that upgrade the vision backend to its "sharp" (high-detail) tier.
+# Matched as a case-insensitive substring of the inferred app name. Sharp
+# is more expensive but legible on small text (editors, IDEs). When unset,
+# a built-in default list is used.
+# sharp_apps = ["vscode", "cursor", "code", "intellij", "pycharm",
+#               "webstorm", "sublime", "atom", "nvim", "neovim",
+#               "text_editor", "helix", "zed"]

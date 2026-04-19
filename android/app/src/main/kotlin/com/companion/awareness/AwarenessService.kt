@@ -59,19 +59,26 @@ class AwarenessService : Service() {
             android.util.Log.w(TAG, "no OpenAI key stored; analyze calls will fail")
             return
         }
-        CoreBridge.configure(key)
+        CoreBridge.configure(key, Settings.budgetUsdDaily(this))
     }
 
     private suspend fun runTickLoop() {
-        val startedAt = System.currentTimeMillis()
+        var appStartedAt = System.currentTimeMillis()
+        var lastApp: String? = null
         while (true) {
+            val currentApp = FocusedApp.currentPackage(this)
+            if (currentApp != lastApp) {
+                appStartedAt = System.currentTimeMillis()
+                lastApp = currentApp
+            }
+            val durationSec = (System.currentTimeMillis() - appStartedAt) / 1000
+
             val screenText = screen?.latestText().orEmpty()
             val micText = audio?.drainTranscript()
-            val durationSec = (System.currentTimeMillis() - startedAt) / 1000
 
             val eventJson = JSONObject().apply {
                 put("timestamp", Instant.now().toString())
-                put("app", JSONObject.NULL)
+                put("app", currentApp ?: JSONObject.NULL)
                 put("window_title", JSONObject.NULL)
                 put("screen_text_excerpt", screenText.take(8000))
                 put("mic_text_recent", micText ?: JSONObject.NULL)

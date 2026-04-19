@@ -284,6 +284,42 @@ impl Config {
         }
         Ok(())
     }
+
+    /// Build a `Config` for the Android frontend.
+    ///
+    /// The desktop constructor (`from_args_and_env`) resolves CLI args,
+    /// env vars, and the TOML config file — none of those exist on
+    /// Android. This variant takes only what the shared gate + API
+    /// modules actually read, and stuffs inert defaults into the
+    /// Linux-only fields (`whisper_model_path`, `a11y_script`,
+    /// `output_dir`) that the Android pipeline never touches.
+    ///
+    /// Defaults for gate thresholds mirror the desktop production values.
+    pub fn for_android(openai_api_key: String, budget_usd_daily: f64) -> Self {
+        Self {
+            openai_api_key,
+            budget_usd_daily,
+            tick_screen_seconds: 2,
+            tick_analysis_seconds: 10,
+            whisper_model_path: PathBuf::new(),
+            perceptual_hash_threshold: 3,
+            text_dedup_similarity: 0.99,
+            gate_app_time_threshold_minutes: 25,
+            gate_periodic_check_minutes: 2,
+            gate_text_new_words_threshold: 5,
+            gate_text_change_cooldown_seconds: 6,
+            gate_voice_cooldown_seconds: 5,
+            gate_frustration_keywords: default_frustration_keywords(),
+            min_send_interval_seconds: 15,
+            transcript_window_size: 5,
+            tts_enabled: false,
+            tts_command: None,
+            output_dir: PathBuf::new(),
+            log_level: "info".into(),
+            a11y_script: PathBuf::new(),
+            backend: BackendKind::Text,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -382,6 +418,30 @@ mod tests {
         let mut cfg = valid_config();
         cfg.a11y_script = PathBuf::from("/nonexistent/definitely/a11y.py");
         cfg.validate().expect("missing a11y script must not be fatal");
+    }
+
+    #[test]
+    fn for_android_carries_key_and_budget_and_uses_production_gate_defaults() {
+        let cfg = Config::for_android("sk-x".into(), 1.25);
+        assert_eq!(cfg.openai_api_key, "sk-x");
+        assert!((cfg.budget_usd_daily - 1.25).abs() < f64::EPSILON);
+
+        // Gate thresholds must match the desktop production defaults so
+        // behaviour across platforms stays comparable.
+        assert_eq!(cfg.gate_app_time_threshold_minutes, 25);
+        assert_eq!(cfg.gate_periodic_check_minutes, 2);
+        assert_eq!(cfg.gate_text_new_words_threshold, 5);
+        assert_eq!(cfg.gate_text_change_cooldown_seconds, 6);
+        assert_eq!(cfg.gate_voice_cooldown_seconds, 5);
+        assert_eq!(cfg.min_send_interval_seconds, 15);
+        assert!(!cfg.gate_frustration_keywords.is_empty(),
+            "frustration keywords must be preloaded");
+
+        // Inert defaults for Linux-only fields.
+        assert!(cfg.whisper_model_path.as_os_str().is_empty());
+        assert!(cfg.a11y_script.as_os_str().is_empty());
+        assert!(cfg.output_dir.as_os_str().is_empty());
+        assert!(!cfg.tts_enabled);
     }
 }
 

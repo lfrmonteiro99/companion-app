@@ -14,6 +14,8 @@ import android.content.Context
 object Settings {
     private const val PREFS = "awareness-settings"
     private const val KEY_OPENAI = "openai_api_key"
+    private const val KEY_BUDGET_USD = "budget_usd_daily"
+    private const val DEFAULT_BUDGET_USD = 0.5f
 
     fun openAiKey(ctx: Context): String =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -25,4 +27,9 @@ object Settings {
             .putString(KEY_OPENAI, value.trim())
             .apply()
     }
+
+    fun budgetUsdDaily(ctx: Context): Double =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getFloat(KEY_BUDGET_USD, DEFAULT_BUDGET_USD)
+            .toDouble()
 }

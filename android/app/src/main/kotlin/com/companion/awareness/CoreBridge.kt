@@ -16,12 +16,11 @@ object CoreBridge {
     external fun init()
 
     /**
-     * Store the OpenAI API key for this process. Must be called before
-     * [analyze]. Losing the process (service killed) requires calling
-     * again on restart — the key itself should live in
-     * `EncryptedSharedPreferences`.
+     * Store the OpenAI API key + budget for this process. Must be called
+     * before [analyze]. If the service is killed, call again on restart —
+     * the key itself should live in `EncryptedSharedPreferences`.
      */
-    external fun configure(apiKey: String)
+    external fun configure(apiKey: String, budgetUsdDaily: Double)
 
     /**
      * Submit a [com.companion.awareness.types.ContextEvent]-shaped JSON

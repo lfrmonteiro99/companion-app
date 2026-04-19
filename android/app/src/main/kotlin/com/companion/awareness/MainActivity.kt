@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
+import android.provider.Settings as SystemSettings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,6 +49,7 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     var status by remember { mutableStateOf("idle") }
                     var apiKey by remember { mutableStateOf(Settings.openAiKey(this@MainActivity)) }
+                    var usageGranted by remember { mutableStateOf(FocusedApp.isGranted(this@MainActivity)) }
 
                     Column(
                         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -65,10 +67,21 @@ class MainActivity : ComponentActivity() {
                             visualTransformation = PasswordVisualTransformation(),
                             singleLine = true,
                         )
+                        Text(
+                            "Usage access: " + if (usageGranted) "granted" else "not granted (app name will be blank)",
+                        )
+                        if (!usageGranted) {
+                            Button(onClick = {
+                                startActivity(Intent(SystemSettings.ACTION_USAGE_ACCESS_SETTINGS))
+                            }) {
+                                Text("Grant usage access")
+                            }
+                        }
                         Text("Status: $status")
                         Button(
                             enabled = apiKey.isNotBlank(),
                             onClick = {
+                                usageGranted = FocusedApp.isGranted(this@MainActivity)
                                 micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
                                 val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                                 projectionLauncher.launch(mpm.createScreenCaptureIntent())

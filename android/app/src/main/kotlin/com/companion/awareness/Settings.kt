@@ -44,8 +44,16 @@ object Settings {
     private fun plainPrefs(ctx: Context): SharedPreferences =
         ctx.getSharedPreferences(FILE_PLAIN, Context.MODE_PRIVATE)
 
-    fun openAiKey(ctx: Context): String =
-        securePrefs(ctx).getString(KEY_OPENAI, "") ?: ""
+    /**
+     * Returns the user-configured OpenAI key if one was saved, otherwise
+     * falls back to `BuildConfig.OPENAI_API_KEY` (baked in at build time
+     * when the `OPENAI_API_KEY` env var was set — typically from a
+     * GitHub secret). Empty string means neither source provided one.
+     */
+    fun openAiKey(ctx: Context): String {
+        val stored = securePrefs(ctx).getString(KEY_OPENAI, "").orEmpty()
+        return stored.ifBlank { BuildConfig.OPENAI_API_KEY }
+    }
 
     fun setOpenAiKey(ctx: Context, value: String) {
         securePrefs(ctx).edit().putString(KEY_OPENAI, value.trim()).apply()

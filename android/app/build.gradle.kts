@@ -4,6 +4,18 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Optional build-time OpenAI key. When the OPENAI_API_KEY env var is
+// set (CI populates it from a GitHub secret; a dev can `export` it
+// before running ./gradlew) we expose it via BuildConfig so the app
+// can auto-configure the core on first launch. Empty string → user
+// must enter the key in the UI, same as a plain install.
+//
+// SECURITY: the key ends up as a plain string inside the APK's
+// BuildConfig.class. Anyone with the APK can extract it with apktool
+// in under a minute. Only use this when the APK stays on your own
+// device (personal build, private distribution).
+val bakedOpenAiKey: String = System.getenv("OPENAI_API_KEY") ?: ""
+
 android {
     namespace = "com.companion.awareness"
     compileSdk = 34
@@ -18,6 +30,8 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
+
+        buildConfigField("String", "OPENAI_API_KEY", "\"$bakedOpenAiKey\"")
     }
 
     buildTypes {
@@ -37,6 +51,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {

@@ -86,6 +86,13 @@ jobs:
 
       - name: Assemble debug APK
         working-directory: android
+        env:
+          # Optional: when this secret is set, the OpenAI key is baked
+          # into BuildConfig.OPENAI_API_KEY so the app auto-configures
+          # on first launch. Leave unset to keep the runtime-entry flow
+          # (safer — APKs are trivially reverse-engineerable, so anyone
+          # who obtains the APK obtains the key).
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: gradle :app:assembleDebug --no-daemon
 
       - name: Locate APK

@@ -66,20 +66,27 @@ class AwarenessService : Service() {
         var appStartedAt = System.currentTimeMillis()
         var lastApp: String? = null
         while (true) {
-            val currentApp = FocusedApp.currentPackage(this)
+            val a11y = AwarenessAccessibilityService.latest()
+            val currentApp = a11y?.packageName
+                ?.takeIf { it != packageName }
+                ?: FocusedApp.currentPackage(this)
             if (currentApp != lastApp) {
                 appStartedAt = System.currentTimeMillis()
                 lastApp = currentApp
             }
             val durationSec = (System.currentTimeMillis() - appStartedAt) / 1000
 
-            val screenText = screen?.latestText().orEmpty()
+            // Prefer accessibility text (cleaner + faster) when the
+            // service is enabled; fall back to ML Kit OCR otherwise.
+            val screenText = a11y?.text?.takeIf { it.isNotBlank() }
+                ?: screen?.latestText().orEmpty()
+            val windowTitle = a11y?.windowTitle
             val micText = audio?.drainTranscript()
 
             val eventJson = JSONObject().apply {
                 put("timestamp", Instant.now().toString())
                 put("app", currentApp ?: JSONObject.NULL)
-                put("window_title", JSONObject.NULL)
+                put("window_title", windowTitle ?: JSONObject.NULL)
                 put("screen_text_excerpt", screenText.take(8000))
                 put("mic_text_recent", micText ?: JSONObject.NULL)
                 put("duration_on_app_seconds", durationSec)

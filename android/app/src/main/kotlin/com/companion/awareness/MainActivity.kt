@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
                     var status by remember { mutableStateOf("idle") }
                     var apiKey by remember { mutableStateOf(Settings.openAiKey(this@MainActivity)) }
                     var usageGranted by remember { mutableStateOf(FocusedApp.isGranted(this@MainActivity)) }
+                    var a11yEnabled by remember { mutableStateOf(AwarenessAccessibilityService.isConnected()) }
 
                     Column(
                         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -77,11 +78,22 @@ class MainActivity : ComponentActivity() {
                                 Text("Grant usage access")
                             }
                         }
+                        Text(
+                            "Accessibility: " + if (a11yEnabled) "on (cleaner text)" else "off (using OCR)",
+                        )
+                        if (!a11yEnabled) {
+                            Button(onClick = {
+                                startActivity(Intent(SystemSettings.ACTION_ACCESSIBILITY_SETTINGS))
+                            }) {
+                                Text("Enable accessibility")
+                            }
+                        }
                         Text("Status: $status")
                         Button(
                             enabled = apiKey.isNotBlank(),
                             onClick = {
                                 usageGranted = FocusedApp.isGranted(this@MainActivity)
+                                a11yEnabled = AwarenessAccessibilityService.isConnected()
                                 micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
                                 val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                                 projectionLauncher.launch(mpm.createScreenCaptureIntent())

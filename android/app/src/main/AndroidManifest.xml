@@ -38,5 +38,23 @@
             android:foregroundServiceType="mediaProjection|microphone"
             android:exported="false" />
 
+        <!--
+          Optional accessibility service. The user must enable it in
+          Settings > Accessibility > Awareness. When enabled, we pull
+          visible text from the focused window directly (faster and
+          cleaner than OCR over MediaProjection).
+        -->
+        <service
+            android:name=".AwarenessAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
     </application>
 </manifest>

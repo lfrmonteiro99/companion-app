@@ -4,4 +4,5 @@
     <string name="channel_name">Awareness capture</string>
     <string name="notification_title">Awareness is watching</string>
     <string name="notification_text">Capturing screen + mic context</string>
+    <string name="a11y_description">Lets Awareness read visible text from the focused window so alerts can reference what you are doing. No data is stored by the service — only kept in memory while the app is running.</string>
 </resources>

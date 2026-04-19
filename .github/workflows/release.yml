@@ -1,9 +1,18 @@
 name: Release Android APK
 
 # Triggers on every push to main (which includes merged PRs).
-# Builds the Rust core for the Android ABIs we ship, assembles a debug
-# APK, creates a tag `v0.1.<run_number>`, and attaches the APK to a new
-# GitHub release so it can be side-loaded on a phone.
+# Builds the Rust core for the Android ABIs we ship, assembles a signed
+# release APK (falls back to debug signing when secrets are not
+# configured yet), creates a tag `v0.1.<run_number>`, and attaches the
+# APK to a new GitHub release so it can be side-loaded on a phone.
+#
+# Expected secrets (configure in Settings > Secrets and variables >
+# Actions before the first production release):
+#   ANDROID_KEYSTORE_B64        base64 of the JKS/PKCS12 keystore
+#   ANDROID_KEYSTORE_PASSWORD   password to open the keystore
+#   ANDROID_KEY_ALIAS           alias of the signing key inside
+#   ANDROID_KEY_PASSWORD        password of that key
+# When any of these is missing the release falls back to debug signing.
 on:
   push:
     branches: [main]
@@ -84,18 +93,43 @@ jobs:
         with:
           gradle-version: "8.10.2"
 
-      - name: Assemble debug APK
+      # Decode the keystore out of the base64 secret onto a path Gradle
+      # will read via the ANDROID_KEYSTORE_PATH env var. Written outside
+      # the repo checkout so it never ends up in build artifacts.
+      - name: Decode release keystore
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "ANDROID_KEYSTORE_B64 not set — release will use debug signing"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/signing"
+          keystore="$RUNNER_TEMP/signing/release.keystore"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$keystore"
+          echo "path=$keystore" >> "$GITHUB_OUTPUT"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble release APK
         working-directory: android
-        run: gradle :app:assembleDebug --no-daemon
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ steps.signing.outputs.path }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle :app:assembleRelease --no-daemon
 
       - name: Locate APK
         id: apk
         run: |
-          path="android/app/build/outputs/apk/debug/app-debug.apk"
+          path="android/app/build/outputs/apk/release/app-release.apk"
           test -f "$path" || { echo "APK not found at $path"; exit 1; }
           dest="awareness-android-${TAG}.apk"
           cp "$path" "$dest"
           echo "path=$dest" >> "$GITHUB_OUTPUT"
+          echo "signed=${{ steps.signing.outputs.available }}" >> "$GITHUB_OUTPUT"
 
       # --- Publish the release -----------------------------------------
       - name: Create GitHub release and upload APK
@@ -106,13 +140,12 @@ jobs:
           body: |
             Automated release from ${{ github.sha }}.
 
-            **Install**: download `${{ steps.apk.outputs.path }}`, transfer
-            to the phone (USB or cloud), then open it on the device.
-            Android will prompt to allow installs from this source — this
-            is a debug-signed APK so you'll need to accept that warning.
+            **Install**: download `${{ steps.apk.outputs.path }}`,
+            transfer it to the phone (USB or cloud), then open it on
+            the device. Android will prompt you to allow installs from
+            this source the first time.
 
-            **Not for production**: debug signing + unencrypted
-            API-key storage. See `android/README` for the shipping checklist.
+            Signing: ${{ steps.apk.outputs.signed == 'true' && 'release keystore' || 'debug keystore (configure ANDROID_KEYSTORE_* secrets to enable release signing)' }}.
           files: ${{ steps.apk.outputs.path }}
           draft: false
           prerelease: false

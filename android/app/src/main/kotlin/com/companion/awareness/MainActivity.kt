@@ -124,6 +124,11 @@ class MainActivity : ComponentActivity() {
                         }) {
                             Text("Stop")
                         }
+                        Button(onClick = {
+                            startActivity(Intent(this@MainActivity, HistoryActivity::class.java))
+                        }) {
+                            Text("View alert history")
+                        }
                     }
                 }
             }

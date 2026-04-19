@@ -111,10 +111,23 @@ class AwarenessService : Service() {
         val shouldAlert = obj.optBoolean("should_alert", false)
         if (!shouldAlert) return
 
-        val title = obj.optString("alert_type", "alert").replaceFirstChar { it.uppercase() }
+        val alertType = obj.optString("alert_type", "alert")
+        val title = alertType.replaceFirstChar { it.uppercase() }
         val body = obj.optString("quick_message", "")
         val urgency = obj.optString("urgency", "low")
         postAlert(title, body, urgency)
+
+        AlertLog.append(
+            this,
+            AlertLog.Entry(
+                timestamp = Instant.now().toString(),
+                app = FocusedApp.currentPackage(this)
+                    ?: AwarenessAccessibilityService.latest()?.packageName,
+                alertType = alertType,
+                urgency = urgency,
+                quickMessage = body,
+            ),
+        )
     }
 
     private fun postAlert(title: String, body: String, urgency: String) {

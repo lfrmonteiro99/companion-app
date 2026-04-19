@@ -58,3 +58,87 @@ pub fn default_frustration_keywords() -> Vec<String> {
     .map(|s| s.to_string())
     .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_tmp(name: &str, body: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("awareness-cfgfile-{}-{}", std::process::id(), name));
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    #[test]
+    fn empty_file_parses_to_defaults() {
+        let p = write_tmp("empty.toml", "");
+        let got = ConfigFile::load_if_present(&[p.as_path()]).unwrap().unwrap();
+        assert!(got.gate.frustration_keywords.is_none());
+        assert!(got.gate.tuning.periodic_check_minutes.is_none());
+        assert!(got.runtime.min_send_interval_seconds.is_none());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn frustration_keywords_override() {
+        let p = write_tmp(
+            "keywords.toml",
+            r#"[gate]
+frustration_keywords = ["foo", "bar"]
+"#,
+        );
+        let got = ConfigFile::load_if_present(&[p.as_path()]).unwrap().unwrap();
+        assert_eq!(
+            got.gate.frustration_keywords.unwrap(),
+            vec!["foo".to_string(), "bar".to_string()]
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn tuning_and_runtime_round_trip() {
+        let p = write_tmp(
+            "tuning.toml",
+            r#"[gate.tuning]
+periodic_check_minutes = 7
+text_new_words_threshold = 3
+
+[runtime]
+min_send_interval_seconds = 42
+"#,
+        );
+        let got = ConfigFile::load_if_present(&[p.as_path()]).unwrap().unwrap();
+        assert_eq!(got.gate.tuning.periodic_check_minutes, Some(7));
+        assert_eq!(got.gate.tuning.text_new_words_threshold, Some(3));
+        assert_eq!(got.runtime.min_send_interval_seconds, Some(42));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn unknown_field_is_rejected() {
+        let p = write_tmp("unknown.toml", "garbage_field = 1\n");
+        let err = ConfigFile::load_if_present(&[p.as_path()]).unwrap_err();
+        assert!(
+            err.to_string().contains("parsing")
+                || err.chain().any(|c| c.to_string().contains("unknown")),
+            "expected parse error, got {err}"
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn load_if_present_returns_none_when_no_candidate_exists() {
+        let missing = std::path::PathBuf::from("/definitely/does/not/exist/xyz.toml");
+        let got = ConfigFile::load_if_present(&[missing.as_path()]).unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn default_frustration_keywords_nonempty() {
+        let kws = default_frustration_keywords();
+        assert!(!kws.is_empty());
+        assert!(kws.iter().any(|k| k == "broken"));
+    }
+}
+

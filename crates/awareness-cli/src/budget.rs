@@ -104,8 +104,15 @@ mod tests {
     use std::env;
 
     fn temp_dir() -> std::path::PathBuf {
+        // Per-test unique path so parallel tests can't stomp on each other's
+        // budget.json. Previously this returned the same path per-process
+        // which was race-prone across parallel tests in the same module.
         let mut dir = env::temp_dir();
-        dir.push(format!("awareness-budget-test-{}", std::process::id()));
+        dir.push(format!(
+            "awareness-budget-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -136,5 +143,77 @@ mod tests {
         assert!((err.limit - 0.10).abs() < f64::EPSILON);
         // Spent should not have changed after the failed spend
         assert!((budget.spent() - 0.05).abs() < f64::EPSILON);
+    }
+
+    fn unique_dir(tag: &str) -> std::path::PathBuf {
+        let mut dir = env::temp_dir();
+        dir.push(format!(
+            "awareness-budget-{}-{}-{}",
+            std::process::id(),
+            tag,
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn save_state_leaves_no_tmp_file() {
+        let dir = unique_dir("no-tmp");
+        let mut budget = BudgetController::new(1.0, &dir);
+        budget.try_spend(0.10).unwrap();
+        let state_path = dir.join("budget.json");
+        let tmp_path = dir.join("budget.json.tmp");
+        assert!(state_path.exists(), "state file must exist after spend");
+        assert!(
+            !tmp_path.exists(),
+            "temp file must not leak after atomic rename"
+        );
+    }
+
+    #[test]
+    fn save_state_produces_valid_json() {
+        let dir = unique_dir("valid-json");
+        let mut budget = BudgetController::new(1.0, &dir);
+        budget.try_spend(0.25).unwrap();
+
+        let raw = std::fs::read_to_string(dir.join("budget.json")).unwrap();
+        // Must be parseable JSON with the expected shape.
+        let v: serde_json::Value = serde_json::from_str(&raw)
+            .expect("budget.json must be valid JSON");
+        assert!(v.get("spent_usd").is_some());
+        assert!(v.get("day").is_some());
+    }
+
+    #[test]
+    fn state_survives_restart() {
+        let dir = unique_dir("restart");
+        {
+            let mut b1 = BudgetController::new(1.0, &dir);
+            b1.try_spend(0.30).unwrap();
+            assert!((b1.spent() - 0.30).abs() < 1e-9);
+        }
+        // New controller reading the same dir should pick up the prior state.
+        let b2 = BudgetController::new(1.0, &dir);
+        assert!(
+            (b2.spent() - 0.30).abs() < 1e-9,
+            "reloaded budget must match persisted state, got {}",
+            b2.spent()
+        );
+    }
+
+    #[test]
+    fn atomic_rename_overwrites_existing_state() {
+        let dir = unique_dir("overwrite");
+        // Seed the state file with stale content.
+        std::fs::write(dir.join("budget.json"), "{\"spent_usd\":0.0,\"day\":\"2000-01-01\"}").unwrap();
+        let mut b = BudgetController::new(1.0, &dir);
+        // try_spend should trigger reset_if_new_day (different day), then save.
+        b.try_spend(0.05).unwrap();
+        let raw = std::fs::read_to_string(dir.join("budget.json")).unwrap();
+        assert!(
+            !raw.contains("2000-01-01"),
+            "stale day must have been overwritten, got: {raw}"
+        );
     }
 }

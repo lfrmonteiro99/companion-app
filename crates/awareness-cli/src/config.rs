@@ -238,3 +238,99 @@ impl Config {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::BackendKind;
+    use std::path::PathBuf;
+
+    fn tmp_output_dir(tag: &str) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("awareness-cfg-{}-{}-{}", std::process::id(), tag, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn valid_config() -> Config {
+        Config {
+            openai_api_key: "test".into(),
+            budget_usd_daily: 1.0,
+            tick_screen_seconds: 2,
+            tick_analysis_seconds: 10,
+            whisper_model_path: PathBuf::from("models/ggml-base.bin"),
+            perceptual_hash_threshold: 3,
+            text_dedup_similarity: 0.99,
+            gate_app_time_threshold_minutes: 25,
+            gate_periodic_check_minutes: 2,
+            gate_text_new_words_threshold: 5,
+            gate_text_change_cooldown_seconds: 6,
+            gate_frustration_keywords: crate::config_file::default_frustration_keywords(),
+            min_send_interval_seconds: 15,
+            output_dir: tmp_output_dir("valid"),
+            log_level: "info".into(),
+            a11y_script: PathBuf::from("../../scripts/a11y_dump.py"),
+            backend: BackendKind::Text,
+        }
+    }
+
+    #[test]
+    fn validate_accepts_happy_path() {
+        // whisper path only matters under --features full; default build
+        // skips that branch, so this must succeed.
+        let cfg = valid_config();
+        cfg.validate().expect("happy path should validate");
+    }
+
+    #[test]
+    fn validate_rejects_non_positive_budget() {
+        let mut cfg = valid_config();
+        cfg.budget_usd_daily = 0.0;
+        assert!(cfg.validate().is_err(), "zero budget must fail");
+
+        cfg.budget_usd_daily = -0.01;
+        assert!(cfg.validate().is_err(), "negative budget must fail");
+    }
+
+    #[test]
+    fn validate_rejects_zero_tick_intervals() {
+        let mut cfg = valid_config();
+        cfg.tick_screen_seconds = 0;
+        assert!(cfg.validate().is_err(), "zero screen tick must fail");
+
+        let mut cfg = valid_config();
+        cfg.tick_analysis_seconds = 0;
+        assert!(cfg.validate().is_err(), "zero analysis tick must fail");
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_similarity() {
+        let mut cfg = valid_config();
+        cfg.text_dedup_similarity = 1.5;
+        assert!(cfg.validate().is_err());
+
+        let mut cfg = valid_config();
+        cfg.text_dedup_similarity = -0.1;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_creates_missing_output_dir() {
+        let mut cfg = valid_config();
+        let mut newpath = cfg.output_dir.clone();
+        newpath.push("nested/child/dir");
+        cfg.output_dir = newpath.clone();
+        assert!(!newpath.exists());
+        cfg.validate().expect("validate should create nested output_dir");
+        assert!(newpath.exists());
+    }
+
+    #[test]
+    fn validate_warns_but_accepts_missing_a11y_script() {
+        // Missing a11y script should only warn, not error (OCR fallback).
+        let mut cfg = valid_config();
+        cfg.a11y_script = PathBuf::from("/nonexistent/definitely/a11y.py");
+        cfg.validate().expect("missing a11y script must not be fatal");
+    }
+}
+

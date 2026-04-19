@@ -129,20 +129,10 @@ async fn handle_prompt(
         .spawn();
 
     let outcome = next_outcome(line_rx, 30).await;
-    let rating_str: &str = match &outcome {
-        PromptOutcome::Input(s) => match s.trim() {
-            "u" => "useful",
-            "n" => "not_useful",
-            "a" => "annoying",
-            _ => "skipped",
-        },
-        PromptOutcome::Timeout => "timeout",
-        PromptOutcome::Eof => "skipped",
-        PromptOutcome::IoError(msg) => {
-            tracing::error!("eval stdin read error: {msg}");
-            "error"
-        }
-    };
+    if let PromptOutcome::IoError(msg) = &outcome {
+        tracing::error!("eval stdin read error: {msg}");
+    }
+    let rating_str = rating_from_outcome(&outcome);
 
     let rating = Rating {
         tick_id: prompt.tick_id,
@@ -158,6 +148,22 @@ async fn handle_prompt(
                 fallback_path, e2, rating,
             );
         }
+    }
+}
+
+/// Map a stdin outcome to the persisted rating string. Pure — used both
+/// from the live loop and from tests.
+fn rating_from_outcome(outcome: &PromptOutcome) -> &'static str {
+    match outcome {
+        PromptOutcome::Input(s) => match s.trim() {
+            "u" => "useful",
+            "n" => "not_useful",
+            "a" => "annoying",
+            _ => "skipped",
+        },
+        PromptOutcome::Timeout => "timeout",
+        PromptOutcome::Eof => "skipped",
+        PromptOutcome::IoError(_) => "error",
     }
 }
 
@@ -188,4 +194,106 @@ async fn append_rating(path: &PathBuf, rating: &Rating) -> Result<()> {
 
     file.write_all(line.as_bytes()).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_path(tag: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "awareness-eval-{}-{}-{}",
+            std::process::id(),
+            tag,
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        p
+    }
+
+    #[test]
+    fn rating_map_useful_input() {
+        assert_eq!(
+            rating_from_outcome(&PromptOutcome::Input("u\n".into())),
+            "useful"
+        );
+        assert_eq!(
+            rating_from_outcome(&PromptOutcome::Input("n".into())),
+            "not_useful"
+        );
+        assert_eq!(
+            rating_from_outcome(&PromptOutcome::Input(" a ".into())),
+            "annoying"
+        );
+    }
+
+    #[test]
+    fn rating_map_empty_input_is_skipped() {
+        assert_eq!(rating_from_outcome(&PromptOutcome::Input("".into())), "skipped");
+        assert_eq!(rating_from_outcome(&PromptOutcome::Input("  \n".into())), "skipped");
+        assert_eq!(rating_from_outcome(&PromptOutcome::Input("x".into())), "skipped");
+    }
+
+    #[test]
+    fn rating_map_timeout_vs_eof_vs_error_are_distinct() {
+        assert_eq!(rating_from_outcome(&PromptOutcome::Timeout), "timeout");
+        assert_eq!(rating_from_outcome(&PromptOutcome::Eof), "skipped");
+        assert_eq!(
+            rating_from_outcome(&PromptOutcome::IoError("pipe closed".into())),
+            "error"
+        );
+        // "timeout" must not collide with "skipped" — the whole point of the
+        // PromptOutcome refactor.
+        assert_ne!(
+            rating_from_outcome(&PromptOutcome::Timeout),
+            rating_from_outcome(&PromptOutcome::Eof),
+        );
+    }
+
+    #[tokio::test]
+    async fn append_rating_writes_jsonl_line() {
+        let path = unique_path("good");
+        let rating = Rating {
+            tick_id: 42,
+            rating: "useful".into(),
+            note: None,
+        };
+        append_rating(&path, &rating).await.expect("write must succeed");
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.ends_with('\n'), "JSONL entries must end with newline");
+        let v: serde_json::Value = serde_json::from_str(raw.trim()).unwrap();
+        assert_eq!(v["tick_id"], 42);
+        assert_eq!(v["rating"], "useful");
+
+        // Second append: file must grow, first line must survive.
+        let rating2 = Rating {
+            tick_id: 43,
+            rating: "timeout".into(),
+            note: Some("n/a".into()),
+        };
+        append_rating(&path, &rating2).await.unwrap();
+        let raw2 = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = raw2.lines().collect();
+        assert_eq!(lines.len(), 2, "two appends must produce two lines");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn append_rating_errors_on_unwritable_path() {
+        // Pointing into /proc which refuses arbitrary writes — the call must
+        // return Err so the fallback path in handle_prompt can take over.
+        let path = PathBuf::from("/proc/awareness-cannot-write-here.jsonl");
+        let rating = Rating {
+            tick_id: 1,
+            rating: "useful".into(),
+            note: None,
+        };
+        let err = append_rating(&path, &rating).await;
+        assert!(
+            err.is_err(),
+            "writing under /proc must fail so the fallback path kicks in"
+        );
+    }
 }

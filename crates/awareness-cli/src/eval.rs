@@ -8,6 +8,7 @@ use tokio::time::Duration;
 use crate::aggregator::ContextEvent;
 use crate::api::FilterResponse;
 use crate::gate::GateDecision;
+use crate::tts::{self, TtsConfig};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -46,6 +47,7 @@ enum PromptOutcome {
 pub async fn spawn_eval_loop(
     mut alert_rx: mpsc::Receiver<AlertPrompt>,
     ratings_path: PathBuf,
+    tts_config: TtsConfig,
 ) -> Result<JoinHandle<()>> {
     let (line_tx, mut line_rx) = mpsc::unbounded_channel::<PromptOutcome>();
 
@@ -82,7 +84,7 @@ pub async fn spawn_eval_loop(
 
     let handle = tokio::spawn(async move {
         while let Some(prompt) = alert_rx.recv().await {
-            handle_prompt(&prompt, &ratings_path, &fallback_path, &mut line_rx).await;
+            handle_prompt(&prompt, &ratings_path, &fallback_path, &mut line_rx, &tts_config).await;
         }
     });
 
@@ -96,6 +98,7 @@ async fn handle_prompt(
     ratings_path: &PathBuf,
     fallback_path: &PathBuf,
     line_rx: &mut mpsc::UnboundedReceiver<PromptOutcome>,
+    tts_config: &TtsConfig,
 ) {
     let now = Local::now().format("%H:%M").to_string();
     let alert_type_upper = prompt.api_response.alert_type.to_uppercase();
@@ -127,6 +130,8 @@ async fn handle_prompt(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+
+    tts::speak(quick_message, tts_config);
 
     let outcome = next_outcome(line_rx, 30).await;
     if let PromptOutcome::IoError(msg) = &outcome {

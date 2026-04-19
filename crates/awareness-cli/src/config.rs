@@ -18,8 +18,19 @@ pub struct Config {
     pub gate_periodic_check_minutes: u64,
     pub gate_text_new_words_threshold: usize,
     pub gate_text_change_cooldown_seconds: u64,
+    /// Minimum seconds between successive voice_activity sends. Controls how
+    /// responsive the always-listen alerts are vs API spend.
+    pub gate_voice_cooldown_seconds: u64,
     pub gate_frustration_keywords: Vec<String>,
     pub min_send_interval_seconds: u64,
+    /// Rolling mic-transcript window: how many recent whisper chunks are
+    /// joined into ContextEvent.mic_text_recent.
+    pub transcript_window_size: usize,
+    /// Speak alert messages aloud via a local TTS binary alongside notify-send.
+    pub tts_enabled: bool,
+    /// Optional user override for the TTS binary. `None` means auto-detect
+    /// (spd-say > espeak-ng > espeak > say).
+    pub tts_command: Option<String>,
     pub output_dir: PathBuf,
     pub log_level: String,
     pub a11y_script: PathBuf,
@@ -49,6 +60,19 @@ pub struct RunArgs {
     /// Min. seconds between text_changed sends.
     #[arg(long)]
     pub gate_text_change_cooldown_seconds: Option<u64>,
+    /// Min. seconds between voice_activity sends. Shorter = more responsive
+    /// always-listen alerts, higher API cost.
+    #[arg(long)]
+    pub gate_voice_cooldown_seconds: Option<u64>,
+    /// Speak alerts aloud via a local TTS binary. Defaults to true.
+    #[arg(long)]
+    pub tts_enabled: Option<bool>,
+    /// Override the TTS binary (default: auto-detect spd-say/espeak/say).
+    #[arg(long)]
+    pub tts_command: Option<String>,
+    /// Rolling mic-transcript window size (default 5).
+    #[arg(long)]
+    pub transcript_window_size: Option<usize>,
     /// Path to the AT-SPI sidecar. Script tries first; OCR is the fallback.
     #[arg(long)]
     pub a11y_script: Option<PathBuf>,
@@ -138,6 +162,11 @@ impl Config {
             .or(gate_tuning.text_change_cooldown_seconds)
             .unwrap_or(6);
 
+        let gate_voice_cooldown_seconds = args
+            .gate_voice_cooldown_seconds
+            .or(gate_tuning.voice_cooldown_seconds)
+            .unwrap_or(5);
+
         let gate_app_time_threshold_minutes = gate_tuning
             .app_time_threshold_minutes
             .unwrap_or(25);
@@ -153,6 +182,20 @@ impl Config {
             .min_send_interval_seconds
             .or_else(|| env_parsed::<u64>("AWARENESS_MIN_SEND_INTERVAL_SECONDS"))
             .unwrap_or(15);
+
+        let transcript_window_size = args
+            .transcript_window_size
+            .or(toml_cfg.runtime.transcript_window_size)
+            .unwrap_or(5);
+
+        let tts_enabled = args
+            .tts_enabled
+            .or(toml_cfg.tts.enabled)
+            .unwrap_or(true);
+
+        let tts_command = args
+            .tts_command
+            .or_else(|| toml_cfg.tts.command.clone());
 
         let a11y_script = args
             .a11y_script
@@ -180,8 +223,12 @@ impl Config {
             gate_periodic_check_minutes,
             gate_text_new_words_threshold,
             gate_text_change_cooldown_seconds,
+            gate_voice_cooldown_seconds,
             gate_frustration_keywords,
             min_send_interval_seconds,
+            transcript_window_size,
+            tts_enabled,
+            tts_command,
             output_dir,
             log_level,
             a11y_script,
@@ -265,8 +312,12 @@ mod tests {
             gate_periodic_check_minutes: 2,
             gate_text_new_words_threshold: 5,
             gate_text_change_cooldown_seconds: 6,
+            gate_voice_cooldown_seconds: 5,
             gate_frustration_keywords: crate::config_file::default_frustration_keywords(),
             min_send_interval_seconds: 15,
+            transcript_window_size: 5,
+            tts_enabled: false,
+            tts_command: None,
             output_dir: tmp_output_dir("valid"),
             log_level: "info".into(),
             a11y_script: PathBuf::from("../../scripts/a11y_dump.py"),

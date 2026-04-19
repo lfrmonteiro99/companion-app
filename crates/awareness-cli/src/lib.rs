@@ -20,3 +20,4 @@ pub mod api_vision;
 pub mod backend;
 pub mod eval;
 pub mod memory;
+pub mod tts;

@@ -19,6 +19,7 @@ use awareness_cli::memory::{MemoryEntry, MemoryRing};
 use awareness_cli::gate::{self, GateAction, GateDecision, GateState};
 use awareness_cli::jsonl::JsonlWriter;
 use awareness_cli::ocr;
+use awareness_cli::tts::TtsConfig;
 use awareness_cli::whisper::WhisperEngine;
 
 #[derive(Parser)]
@@ -243,8 +244,16 @@ async fn run(args: RunArgs) -> Result<()> {
         });
     }
 
-    // Eval loop (terminal alerts + ratings)
-    let _eval = spawn_eval_loop(alert_rx, ratings_path).await?;
+    // Resolve TTS backend once at startup — probes PATH for spd-say/espeak/say.
+    let tts_config = TtsConfig::resolve(cfg.tts_enabled, cfg.tts_command.as_deref());
+    tracing::info!(
+        "tts: enabled={} backend={:?}",
+        tts_config.enabled,
+        tts_config.command,
+    );
+
+    // Eval loop (terminal alerts + ratings + optional TTS)
+    let _eval = spawn_eval_loop(alert_rx, ratings_path, tts_config).await?;
 
     // API backend: text or vision, selected by --backend flag.
     let backend = Backend::new(cfg.backend, &cfg)?;

@@ -19,6 +19,11 @@ pub struct ContextEvent {
     pub mic_text_recent: Option<String>,
     pub duration_on_app_seconds: u64,
     pub history_apps_30min: Vec<(String, u64)>,
+    /// True only when the event was emitted because a fresh transcript just
+    /// arrived. Used by the gate's voice_activity rule to distinguish new
+    /// speech from stale buffer contents on periodic ticks.
+    #[serde(default)]
+    pub mic_text_new: bool,
 }
 
 fn build_event(
@@ -28,6 +33,7 @@ fn build_event(
     recent_transcripts: &VecDeque<String>,
     app_started_at: &Instant,
     app_history: &VecDeque<(String, u64, Instant)>,
+    mic_text_new: bool,
 ) -> ContextEvent {
     // 8000 chars (~2000 tokens) covers most a11y dumps (Teams ~20K chars is
     // still truncated but the compose box / visible chat fits). 800 was too
@@ -62,6 +68,7 @@ fn build_event(
         mic_text_recent,
         duration_on_app_seconds,
         history_apps_30min,
+        mic_text_new,
     }
 }
 
@@ -123,6 +130,7 @@ pub async fn run(
                                 &recent_transcripts,
                                 &app_started_at,
                                 &app_history,
+                                false,
                             );
                             event_tx.send(event).await?;
                         } else {
@@ -136,10 +144,24 @@ pub async fn run(
                 match transcript_msg {
                     None => { transcript_open = false; }
                     Some(chunk) => {
-                        if recent_transcripts.len() == 3 {
+                        if recent_transcripts.len() >= cfg.transcript_window_size.max(1) {
                             recent_transcripts.pop_front();
                         }
                         recent_transcripts.push_back(chunk.text);
+
+                        // Fresh speech reached us — emit an event immediately so
+                        // the gate's voice_activity rule can decide whether to
+                        // send without waiting for the next 10s periodic tick.
+                        let event = build_event(
+                            &current_app,
+                            &current_window_title,
+                            &last_screen_text,
+                            &recent_transcripts,
+                            &app_started_at,
+                            &app_history,
+                            true,
+                        );
+                        event_tx.send(event).await?;
                     }
                 }
             }
@@ -152,6 +174,7 @@ pub async fn run(
                     &recent_transcripts,
                     &app_started_at,
                     &app_history,
+                    false,
                 );
                 event_tx.send(event).await?;
             }
@@ -179,8 +202,12 @@ mod tests {
             gate_periodic_check_minutes: 2,
             gate_text_new_words_threshold: 5,
             gate_text_change_cooldown_seconds: 6,
+            gate_voice_cooldown_seconds: 5,
             gate_frustration_keywords: crate::config_file::default_frustration_keywords(),
             min_send_interval_seconds: 15,
+            transcript_window_size: 5,
+            tts_enabled: false,
+            tts_command: None,
             output_dir: std::path::PathBuf::from("data"),
             log_level: "info".into(),
             a11y_script: std::path::PathBuf::from("a11y.py"),
@@ -207,6 +234,7 @@ mod tests {
             &VecDeque::new(),
             &Instant::now(),
             &VecDeque::new(),
+            false,
         );
         assert_eq!(ev.window_title.as_deref(), Some("Doc.md — VSCode"));
         assert_eq!(ev.app.as_deref(), Some("vscode"));
@@ -221,6 +249,7 @@ mod tests {
             &VecDeque::new(),
             &Instant::now(),
             &VecDeque::new(),
+            false,
         );
         assert_eq!(ev.window_title, None);
     }

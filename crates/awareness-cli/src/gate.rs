@@ -22,6 +22,9 @@ pub struct GateState {
     /// Screen text excerpt from the most recent Send. Used by the
     /// "text_changed" rule to detect new words the user has typed/seen since.
     pub last_sent_text: Option<String>,
+    /// Timestamp of the most recent voice_activity send. Tracked separately
+    /// from last_sent_at so the short voice cooldown doesn't block other rules.
+    pub last_voice_send: Option<DateTime<Utc>>,
 }
 
 /// Count distinct whitespace-split tokens in `current` that are not present in
@@ -124,7 +127,30 @@ pub fn evaluate(
         };
     }
 
-    // Rule 6: No trigger.
+    // Rule 6: Fresh voice activity. Fires when a transcript just arrived and
+    // the voice-specific cooldown has elapsed — keeps conversational alerts
+    // responsive without spamming the API on every whisper chunk.
+    if event.mic_text_new
+        && !event.mic_text_recent.as_deref().unwrap_or("").trim().is_empty()
+    {
+        let voice_cooldown = Duration::seconds(cfg.gate_voice_cooldown_seconds as i64);
+        let voice_cooldown_elapsed = match state.last_voice_send {
+            None => true,
+            Some(last) => Utc::now() - last >= voice_cooldown,
+        };
+        if voice_cooldown_elapsed {
+            let now = Utc::now();
+            state.last_sent_at = Some(now);
+            state.last_voice_send = Some(now);
+            state.last_sent_text = Some(event.screen_text_excerpt.clone());
+            return GateDecision {
+                action: GateAction::Send,
+                reason: "voice_activity".to_string(),
+            };
+        }
+    }
+
+    // Rule 7: No trigger.
     GateDecision {
         action: GateAction::Skip,
         reason: "no_trigger".to_string(),
@@ -145,6 +171,7 @@ mod tests {
             mic_text_recent: None,
             duration_on_app_seconds: 0,
             history_apps_30min: vec![],
+            mic_text_new: false,
         }
     }
 
@@ -161,8 +188,12 @@ mod tests {
             gate_periodic_check_minutes: 15,
             gate_text_new_words_threshold: 5,
             gate_text_change_cooldown_seconds: 6,
+            gate_voice_cooldown_seconds: 5,
             gate_frustration_keywords: crate::config_file::default_frustration_keywords(),
             min_send_interval_seconds: 15,
+            transcript_window_size: 5,
+            tts_enabled: false,
+            tts_command: None,
             output_dir: std::path::PathBuf::from("data"),
             log_level: "info".to_string(),
             a11y_script: std::path::PathBuf::from("scripts/a11y_dump.py"),
@@ -177,6 +208,7 @@ mod tests {
             last_app: Some("firefox".to_string()),
             last_sent_at: Some(Utc::now()),
             last_sent_text: None,
+            last_voice_send: None,
         };
         let event = make_event(); // app = "vscode", differs from "firefox"
         let decision = evaluate(&event, &mut state, &cfg);
@@ -192,6 +224,7 @@ mod tests {
             last_app: Some("vscode".to_string()),
             last_sent_at: Some(Utc::now()),
             last_sent_text: None,
+            last_voice_send: None,
         };
         let mut event = make_event();
         event.duration_on_app_seconds = 25 * 60; // exactly at threshold
@@ -207,6 +240,7 @@ mod tests {
             last_app: Some("vscode".to_string()),
             last_sent_at: Some(Utc::now()),
             last_sent_text: None,
+            last_voice_send: None,
         };
         let mut event = make_event();
         event.mic_text_recent = Some("wtf is this".to_string());
@@ -223,6 +257,7 @@ mod tests {
             last_sent_at: Some(Utc::now()), // sent just now → no periodic_check
             // Same text as the event → no new words → no text_changed fire
             last_sent_text: Some("some code here".to_string()),
+            last_voice_send: None,
         };
         let mut event = make_event();
         event.duration_on_app_seconds = 0; // below threshold
@@ -240,6 +275,7 @@ mod tests {
             last_app: Some("vscode".to_string()),
             last_sent_at: Some(seven_sec_ago),
             last_sent_text: Some("fixed prefix text here".to_string()),
+            last_voice_send: None,
         };
         let mut event = make_event();
         event.screen_text_excerpt =
@@ -257,11 +293,64 @@ mod tests {
             last_app: Some("vscode".to_string()),
             last_sent_at: Some(two_sec_ago),
             last_sent_text: Some("fixed prefix text here".to_string()),
+            last_voice_send: None,
         };
         let mut event = make_event();
         event.screen_text_excerpt =
             "fixed prefix text here muitas palavras novas completamente diferentes".to_string();
         // Even with 7 new words, cooldown (6s) hasn't elapsed → skip.
+        let decision = evaluate(&event, &mut state, &cfg);
+        assert_eq!(decision.action, GateAction::Skip);
+    }
+
+    #[test]
+    fn test_voice_activity_fires_on_fresh_transcript() {
+        let cfg = make_config();
+        let mut state = GateState {
+            last_app: Some("vscode".to_string()),
+            last_sent_at: Some(Utc::now()), // blocks periodic_check
+            last_sent_text: Some("some code here".to_string()),
+            last_voice_send: None,
+        };
+        let mut event = make_event();
+        event.mic_text_recent = Some("what's the time complexity of this?".to_string());
+        event.mic_text_new = true;
+        let decision = evaluate(&event, &mut state, &cfg);
+        assert_eq!(decision.action, GateAction::Send);
+        assert_eq!(decision.reason, "voice_activity");
+        assert!(state.last_voice_send.is_some());
+    }
+
+    #[test]
+    fn test_voice_activity_respects_cooldown() {
+        let cfg = make_config();
+        let two_sec_ago = Utc::now() - Duration::seconds(2);
+        let mut state = GateState {
+            last_app: Some("vscode".to_string()),
+            last_sent_at: Some(Utc::now()),
+            last_sent_text: Some("some code here".to_string()),
+            last_voice_send: Some(two_sec_ago),
+        };
+        let mut event = make_event();
+        event.mic_text_recent = Some("another thought".to_string());
+        event.mic_text_new = true;
+        // voice cooldown is 5s → 2s is not enough → skip.
+        let decision = evaluate(&event, &mut state, &cfg);
+        assert_eq!(decision.action, GateAction::Skip);
+    }
+
+    #[test]
+    fn test_voice_activity_skipped_when_mic_text_new_false() {
+        let cfg = make_config();
+        let mut state = GateState {
+            last_app: Some("vscode".to_string()),
+            last_sent_at: Some(Utc::now()),
+            last_sent_text: Some("some code here".to_string()),
+            last_voice_send: None,
+        };
+        let mut event = make_event();
+        event.mic_text_recent = Some("stale transcript".to_string());
+        event.mic_text_new = false; // periodic tick, not a new transcript
         let decision = evaluate(&event, &mut state, &cfg);
         assert_eq!(decision.action, GateAction::Skip);
     }
@@ -274,6 +363,7 @@ mod tests {
             last_app: Some("vscode".to_string()),
             last_sent_at: Some(sixteen_min_ago),
             last_sent_text: Some("some code here".to_string()),
+            last_voice_send: None,
         };
         let event = make_event(); // screen_text_excerpt is non-empty
         let decision = evaluate(&event, &mut state, &cfg);

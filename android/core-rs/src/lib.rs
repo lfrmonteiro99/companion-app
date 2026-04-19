@@ -20,6 +20,7 @@
 //!      next tick has rolling history (avoids repeat alerts).
 
 use awareness_core::api::OpenAiClient;
+use awareness_core::budget::BudgetController;
 use awareness_core::config::Config;
 use awareness_core::gate::{self, GateAction, GateDecision, GateState};
 use awareness_core::memory::{MemoryEntry, MemoryRing};
@@ -27,6 +28,7 @@ use awareness_core::types::{ContextEvent, FilterResponse};
 use jni::objects::{JClass, JString};
 use jni::sys::{jdouble, jstring};
 use jni::JNIEnv;
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tokio::runtime::Runtime;
 
@@ -37,6 +39,7 @@ struct CoreState {
     config: Config,
     gate: GateState,
     memory: MemoryRing,
+    budget: BudgetController,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -69,11 +72,19 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_configure<'local>
     _class: JClass<'local>,
     api_key: JString<'local>,
     budget_usd_daily: jdouble,
+    files_dir: JString<'local>,
 ) {
     let key: String = match env.get_string(&api_key) {
         Ok(s) => s.into(),
         Err(e) => {
             log::error!("configure: bad api_key string: {e}");
+            return;
+        }
+    };
+    let dir: String = match env.get_string(&files_dir) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            log::error!("configure: bad files_dir string: {e}");
             return;
         }
     };
@@ -85,13 +96,15 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_configure<'local>
             return;
         }
     };
+    let budget = BudgetController::new(budget_usd_daily, &PathBuf::from(dir));
     *state_slot().lock().unwrap() = Some(CoreState {
         client,
         config,
         gate: GateState::default(),
         memory: MemoryRing::new(MEMORY_CAPACITY),
+        budget,
     });
-    log::info!("configure: core state ready");
+    log::info!("configure: core state ready (budget ${budget_usd_daily:.2}/day)");
 }
 
 #[no_mangle]
@@ -134,7 +147,36 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
         );
     }
 
-    // 2. API call with rolling memory as context.
+    // 2. Budget precheck. A single filter_call on gpt-4o-mini is roughly
+    // $0.0005–$0.002 — if we have less than 1/10th of a cent left we
+    // consider the day over.
+    state.budget.reset_if_new_day();
+    if state.budget.remaining() < 0.001 {
+        log::warn!(
+            "budget exceeded (spent ${:.4}/${:.4}); skipping API call",
+            state.budget.spent(),
+            state.config.budget_usd_daily,
+        );
+        return ok_json(
+            &mut env,
+            &FilterResponse {
+                should_alert: false,
+                alert_type: "budget_exceeded".into(),
+                urgency: "low".into(),
+                needs_deep_analysis: false,
+                quick_message: format!(
+                    "Daily budget of ${:.2} exhausted. Alerts paused until tomorrow.",
+                    state.config.budget_usd_daily,
+                ),
+                tokens_in: 0,
+                tokens_out: 0,
+                cost_usd: 0.0,
+                parse_error: None,
+            },
+        );
+    }
+
+    // 3. API call with rolling memory as context.
     let memory_lines = state.memory.to_prompt_lines();
     let client = state.client.clone();
     // Drop the mutex while the HTTP call is in flight — Kotlin invokes
@@ -159,17 +201,25 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
             })
     });
 
-    // 3. Push to memory if the model decided to alert.
-    if response.should_alert && response.parse_error.is_none() {
+    // 4. Deduct actual cost + push to memory if the model decided to alert.
+    {
         let mut guard = state_slot().lock().unwrap();
         if let Some(state) = guard.as_mut() {
-            state.memory.push(MemoryEntry {
-                timestamp: event.timestamp,
-                app: event.app.clone(),
-                alert_type: response.alert_type.clone(),
-                should_alert: true,
-                quick_message: response.quick_message.clone(),
-            });
+            if let Err(over) = state.budget.try_spend(response.cost_usd) {
+                log::warn!(
+                    "budget tipped over while deducting call cost: spent ${:.4} of ${:.4}",
+                    over.spent, over.limit,
+                );
+            }
+            if response.should_alert && response.parse_error.is_none() {
+                state.memory.push(MemoryEntry {
+                    timestamp: event.timestamp,
+                    app: event.app.clone(),
+                    alert_type: response.alert_type.clone(),
+                    should_alert: true,
+                    quick_message: response.quick_message.clone(),
+                });
+            }
         }
     }
 

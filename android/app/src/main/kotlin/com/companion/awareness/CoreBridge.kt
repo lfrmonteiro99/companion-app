@@ -16,11 +16,13 @@ object CoreBridge {
     external fun init()
 
     /**
-     * Store the OpenAI API key + budget for this process. Must be called
-     * before [analyze]. If the service is killed, call again on restart —
-     * the key itself should live in `EncryptedSharedPreferences`.
+     * Store the OpenAI API key + daily USD budget + a writable directory
+     * (the app's internal `filesDir`) where the core persists
+     * `budget.json`. Must be called before [analyze]. If the process
+     * dies, call again on restart — the key itself should live in
+     * `EncryptedSharedPreferences`.
      */
-    external fun configure(apiKey: String, budgetUsdDaily: Double)
+    external fun configure(apiKey: String, budgetUsdDaily: Double, filesDir: String)
 
     /**
      * Submit a [com.companion.awareness.types.ContextEvent]-shaped JSON

@@ -59,7 +59,7 @@ class AwarenessService : Service() {
             android.util.Log.w(TAG, "no OpenAI key stored; analyze calls will fail")
             return
         }
-        CoreBridge.configure(key, Settings.budgetUsdDaily(this))
+        CoreBridge.configure(key, Settings.budgetUsdDaily(this), filesDir.absolutePath)
     }
 
     private suspend fun runTickLoop() {

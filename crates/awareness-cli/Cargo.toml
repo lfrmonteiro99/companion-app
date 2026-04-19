@@ -8,6 +8,7 @@ name = "awareness-cli"
 path = "src/main.rs"
 
 [dependencies]
+awareness-core = { path = "../awareness-core" }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 thiserror = "1"

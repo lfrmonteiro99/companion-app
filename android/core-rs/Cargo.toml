@@ -1,0 +1,26 @@
+[package]
+name = "awareness-core-android"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "awareness_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = { version = "0.21", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync"] }
+tracing = "0.1"
+android_logger = "0.14"
+log = "0.4"
+
+# Pull in the cross-platform pieces from the CLI crate.
+# We intentionally disable default features so the Linux-only code
+# (portal, cpal, whisper-rs, leptess, etc.) is not compiled for Android.
+awareness-cli = { path = "../../crates/awareness-cli", default-features = false }

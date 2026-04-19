@@ -19,6 +19,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
+toml = "0.8"
 num_cpus = "1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
@@ -30,7 +31,11 @@ base64 = "0.22"
 # Enable with: cargo build --features full
 [features]
 default = []
-full = ["dep:leptess", "dep:cpal", "dep:webrtc-vad", "dep:whisper-rs", "dep:ashpd", "dep:pipewire"]
+# Composable features so CI can check subsets that don't need all system libs.
+portal = ["dep:ashpd", "dep:pipewire"]
+ocr    = ["dep:leptess"]
+audio  = ["dep:cpal", "dep:webrtc-vad", "dep:whisper-rs"]
+full   = ["portal", "ocr", "audio"]
 
 [dependencies.leptess]
 version = "0.14"

@@ -8,21 +8,29 @@ Output stdout (one line):
 
 Designed to be called once per tick by the Rust CLI.
 """
+from __future__ import annotations
+
 import json
 import os
+import signal
 import subprocess
 import sys
-import signal
+from typing import Any, List, Optional, Tuple
 
 try:
-    import pyatspi
-    from pyatspi import Registry, STATE_ACTIVE, STATE_FOCUSED, STATE_SHOWING
+    import pyatspi  # type: ignore[import-not-found]
+    from pyatspi import (  # type: ignore[import-not-found]
+        Registry,
+        STATE_ACTIVE,
+        STATE_FOCUSED,
+        STATE_SHOWING,
+    )
 except ImportError:
     print(json.dumps({"error": "pyatspi not installed"}))
     sys.exit(0)
 
 
-def _xprop_topmost_title():
+def _xprop_topmost_title() -> Optional[str]:
     """
     GNOME Wayland doesn't populate _NET_ACTIVE_WINDOW, but it does maintain
     _NET_CLIENT_LIST_STACKING for XWayland apps (Teams/Chrome/Electron). The
@@ -36,28 +44,30 @@ def _xprop_topmost_title():
             ["xprop", "-root", "_NET_CLIENT_LIST_STACKING"],
             capture_output=True, text=True, timeout=1, env=env,
         )
-        if out.returncode != 0:
-            return None
-        ids = [tok.rstrip(",") for tok in out.stdout.split() if tok.startswith("0x")]
-        if not ids:
-            return None
-        topmost = ids[-1]
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if out.returncode != 0 or not out.stdout:
+        return None
+    ids = [tok.rstrip(",") for tok in out.stdout.split() if tok.startswith("0x")]
+    if not ids:
+        return None
+    topmost = ids[-1]
+    try:
         out2 = subprocess.run(
             ["xprop", "-id", topmost, "_NET_WM_NAME"],
             capture_output=True, text=True, timeout=1, env=env,
         )
-        if out2.returncode != 0:
-            return None
-        line = out2.stdout.strip()
-        if "=" not in line:
-            return None
-        val = line.split("=", 1)[1].strip()
-        if val.startswith('"') and val.endswith('"'):
-            return val[1:-1]
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
-    except Exception:
+    if out2.returncode != 0 or not out2.stdout:
         return None
-
+    line = out2.stdout.strip()
+    if "=" not in line:
+        return None
+    val = line.split("=", 1)[1].strip()
+    if val.startswith('"') and val.endswith('"'):
+        return val[1:-1]
+    return None
 
 
 # Apps that register title-matching frames but hold no user content.
@@ -75,35 +85,33 @@ _TITLE_MATCH_BLACKLIST = {
 }
 
 
-def _find_by_title(title):
+def _find_by_title(title: str) -> Tuple[Optional[str], Any]:
     if not title:
         return (None, None)
     desktop = Registry.getDesktop(0)
-    # Collect ALL matches then pick the one with most children — the real
-    # content app, not the decoration wrapper.
-    matches = []
+    matches: List[Tuple[str, Any, int]] = []
     for i in range(desktop.childCount):
         try:
             app = desktop.getChildAtIndex(i)
-            if app is None:
-                continue
-            app_name = (app.name or "").strip()
-            if app_name in _TITLE_MATCH_BLACKLIST:
-                continue
-            for j in range(app.childCount):
-                try:
-                    win = app.getChildAtIndex(j)
-                    if win is None:
-                        continue
-                    wname = (win.name or "").strip()
-                    if not wname:
-                        continue
-                    if wname == title or title in wname or wname in title:
-                        matches.append((app_name, win, win.childCount))
-                except Exception:
-                    continue
-        except Exception:
+        except (RuntimeError, AttributeError):
             continue
+        if app is None:
+            continue
+        app_name = (app.name or "").strip()
+        if app_name in _TITLE_MATCH_BLACKLIST:
+            continue
+        for j in range(app.childCount):
+            try:
+                win = app.getChildAtIndex(j)
+            except (RuntimeError, AttributeError):
+                continue
+            if win is None:
+                continue
+            wname = (win.name or "").strip()
+            if not wname:
+                continue
+            if wname == title or title in wname or wname in title:
+                matches.append((app_name, win, win.childCount))
     if not matches:
         return (None, None)
     # Prefer the match with the largest direct subtree.
@@ -111,27 +119,30 @@ def _find_by_title(title):
     return (matches[0][0], matches[0][1])
 
 
-def _has_focused_descendant(node, depth=0, max_depth=6):
+def _has_focused_descendant(node: Any, depth: int = 0, max_depth: int = 6) -> bool:
     """Cheap recursive check — limited depth to avoid walking entire trees."""
     if depth > max_depth:
         return False
     try:
-        st = node.getState()
-        if st.contains(STATE_FOCUSED):
+        if node.getState().contains(STATE_FOCUSED):
             return True
-    except Exception:
+    except (RuntimeError, AttributeError):
         pass
     try:
-        for i in range(node.childCount):
+        child_count = node.childCount
+    except (RuntimeError, AttributeError):
+        return False
+    for i in range(child_count):
+        try:
             c = node.getChildAtIndex(i)
-            if c is not None and _has_focused_descendant(c, depth + 1, max_depth):
-                return True
-    except Exception:
-        pass
+        except (RuntimeError, AttributeError):
+            continue
+        if c is not None and _has_focused_descendant(c, depth + 1, max_depth):
+            return True
     return False
 
 
-def find_active_window():
+def find_active_window() -> Tuple[Optional[str], Any]:
     """
     Return (app_name, active_window_node) for the focused window.
 
@@ -145,104 +156,112 @@ def find_active_window():
     """
     desktop = Registry.getDesktop(0)
 
-    # Pass 1: STATE_ACTIVE on a window — skip decoration/WM wrappers that
-    # report STATE_ACTIVE for XWayland apps they frame (mutter-x11-frames).
     for i in range(desktop.childCount):
         try:
             app = desktop.getChildAtIndex(i)
-            if app is None:
-                continue
-            app_name = (app.name or "").strip()
-            if app_name in _TITLE_MATCH_BLACKLIST:
-                continue
-            for j in range(app.childCount):
-                try:
-                    win = app.getChildAtIndex(j)
-                    if win is None:
-                        continue
-                    st = win.getState()
-                    if st.contains(STATE_ACTIVE):
-                        return (app_name, win)
-                except Exception:
-                    continue
-        except Exception:
+        except (RuntimeError, AttributeError):
             continue
+        if app is None:
+            continue
+        app_name = (app.name or "").strip()
+        if app_name in _TITLE_MATCH_BLACKLIST:
+            continue
+        for j in range(app.childCount):
+            try:
+                win = app.getChildAtIndex(j)
+            except (RuntimeError, AttributeError):
+                continue
+            if win is None:
+                continue
+            try:
+                if win.getState().contains(STATE_ACTIVE):
+                    return (app_name, win)
+            except (RuntimeError, AttributeError):
+                continue
 
-    # Pass 2: match by XWayland topmost window title.
     title = _xprop_topmost_title()
     if title:
-        app_name, win = _find_by_title(title)
+        app_name_opt, win = _find_by_title(title)
         if win is not None:
-            return (app_name, win)
+            return (app_name_opt, win)
 
-    # Pass 3: visible frames with a focused descendant.
     for i in range(desktop.childCount):
         try:
             app = desktop.getChildAtIndex(i)
-            if app is None:
-                continue
-            for j in range(app.childCount):
-                try:
-                    win = app.getChildAtIndex(j)
-                    if win is None:
-                        continue
-                    try:
-                        role = win.getRoleName()
-                    except Exception:
-                        role = ""
-                    if role != "frame":
-                        continue
-                    st = win.getState()
-                    if not st.contains(STATE_SHOWING):
-                        continue
-                    if _has_focused_descendant(win):
-                        return (app.name or "", win)
-                except Exception:
-                    continue
-        except Exception:
+        except (RuntimeError, AttributeError):
             continue
+        if app is None:
+            continue
+        for j in range(app.childCount):
+            try:
+                win = app.getChildAtIndex(j)
+            except (RuntimeError, AttributeError):
+                continue
+            if win is None:
+                continue
+            try:
+                role = win.getRoleName()
+            except (RuntimeError, AttributeError):
+                role = ""
+            if role != "frame":
+                continue
+            try:
+                st = win.getState()
+            except (RuntimeError, AttributeError):
+                continue
+            if not st.contains(STATE_SHOWING):
+                continue
+            if _has_focused_descendant(win):
+                return (app.name or "", win)
 
     return (None, None)
 
 
-def _clean(s):
+def _clean(s: Optional[str]) -> str:
     # U+FFFC = object replacement character. Teams / Electron webviews use it
-    # as a placeholder for every icon/avatar; without filtering, the dump
-    # becomes dominated by empty anchors.
+    # as a placeholder for every icon/avatar.
     return (s or "").replace("\ufffc", "").strip()
 
 
-def collect_text(node, depth=0, max_depth=50, out=None):
+def collect_text(
+    node: Any,
+    depth: int = 0,
+    max_depth: int = 50,
+    out: Optional[List[str]] = None,
+) -> List[str]:
     if out is None:
         out = []
     if depth > max_depth:
         return out
     try:
-        try:
-            ti = node.queryText()
-            text = _clean(ti.getText(0, ti.characterCount))
-            if len(text) > 1:
-                out.append(text)
-        except Exception:
-            pass
+        ti = node.queryText()
+        text = _clean(ti.getText(0, ti.characterCount))
+        if len(text) > 1:
+            out.append(text)
+    except (RuntimeError, AttributeError, NotImplementedError):
+        pass
+    try:
         name = _clean(node.name)
         if len(name) > 1 and (not out or out[-1] != name):
             out.append(name)
-    except Exception:
+    except (RuntimeError, AttributeError):
         pass
     try:
-        for i in range(node.childCount):
+        child_count = node.childCount
+    except (RuntimeError, AttributeError):
+        return out
+    for i in range(child_count):
+        try:
             child = node.getChildAtIndex(i)
-            if child is not None:
-                collect_text(child, depth + 1, max_depth, out)
-    except Exception:
-        pass
+        except (RuntimeError, AttributeError):
+            continue
+        if child is not None:
+            collect_text(child, depth + 1, max_depth, out)
     return out
 
 
-def main():
-    # Hard cap: if AT-SPI hangs, exit after 3 s.
-    def _timeout(_signum, _frame):
+def main() -> None:
+    def _timeout(_signum: int, _frame: Any) -> None:
         print(json.dumps({"error": "timeout"}))
         sys.exit(0)
 
@@ -257,9 +276,8 @@ def main():
     try:
         title = win.name or ""
         parts = collect_text(win)
-        # De-duplicate while preserving order.
-        seen = set()
-        unique = []
+        seen: set[str] = set()
+        unique: List[str] = []
         for p in parts:
             if p not in seen:
                 seen.add(p)
@@ -271,7 +289,7 @@ def main():
             "text": text,
             "nodes": len(unique),
         }))
-    except Exception as e:
+    except (RuntimeError, AttributeError, OSError) as e:
         print(json.dumps({"error": str(e)}))
 
 

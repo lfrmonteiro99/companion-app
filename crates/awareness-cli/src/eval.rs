@@ -2,7 +2,6 @@ use anyhow::Result;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tokio::io::AsyncBufReadExt as _;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -25,21 +24,65 @@ pub struct AlertPrompt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rating {
     pub tick_id: u64,
-    pub rating: String, // "useful" | "not_useful" | "annoying" | "skipped"
+    pub rating: String, // "useful" | "not_useful" | "annoying" | "skipped" | "timeout" | "error"
     pub note: Option<String>,
+}
+
+/// One stdin read attempt resolves to one of these.
+enum PromptOutcome {
+    Input(String),
+    Timeout,
+    Eof,
+    IoError(String),
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Spawns the eval display loop.
 /// Receives AlertPrompts, displays them, collects ratings, writes to ratings_path.
+///
+/// A dedicated OS thread owns stdin so read_line never blocks the tokio runtime
+/// and buffered input survives across prompts.
 pub async fn spawn_eval_loop(
     mut alert_rx: mpsc::Receiver<AlertPrompt>,
     ratings_path: PathBuf,
 ) -> Result<JoinHandle<()>> {
+    let (line_tx, mut line_rx) = mpsc::unbounded_channel::<PromptOutcome>();
+
+    std::thread::Builder::new()
+        .name("eval-stdin".into())
+        .spawn(move || {
+            use std::io::BufRead;
+            let stdin = std::io::stdin();
+            let mut buf = String::new();
+            loop {
+                buf.clear();
+                match stdin.lock().read_line(&mut buf) {
+                    Ok(0) => {
+                        let _ = line_tx.send(PromptOutcome::Eof);
+                        break;
+                    }
+                    Ok(_) => {
+                        if line_tx.send(PromptOutcome::Input(buf.clone())).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = line_tx.send(PromptOutcome::IoError(e.to_string()));
+                        break;
+                    }
+                }
+            }
+        })?;
+
+    let fallback_path = ratings_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("ratings_failed.jsonl");
+
     let handle = tokio::spawn(async move {
         while let Some(prompt) = alert_rx.recv().await {
-            handle_prompt(&prompt, &ratings_path).await;
+            handle_prompt(&prompt, &ratings_path, &fallback_path, &mut line_rx).await;
         }
     });
 
@@ -48,7 +91,12 @@ pub async fn spawn_eval_loop(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-async fn handle_prompt(prompt: &AlertPrompt, ratings_path: &PathBuf) {
+async fn handle_prompt(
+    prompt: &AlertPrompt,
+    ratings_path: &PathBuf,
+    fallback_path: &PathBuf,
+    line_rx: &mut mpsc::UnboundedReceiver<PromptOutcome>,
+) {
     let now = Local::now().format("%H:%M").to_string();
     let alert_type_upper = prompt.api_response.alert_type.to_uppercase();
     let quick_message = &prompt.api_response.quick_message;
@@ -80,12 +128,20 @@ async fn handle_prompt(prompt: &AlertPrompt, ratings_path: &PathBuf) {
         .stderr(std::process::Stdio::null())
         .spawn();
 
-    let raw_input = read_line_with_timeout(30).await;
-    let rating_str = match raw_input.as_deref().map(str::trim) {
-        Some("u") => "useful",
-        Some("n") => "not_useful",
-        Some("a") => "annoying",
-        _ => "skipped",
+    let outcome = next_outcome(line_rx, 30).await;
+    let rating_str: &str = match &outcome {
+        PromptOutcome::Input(s) => match s.trim() {
+            "u" => "useful",
+            "n" => "not_useful",
+            "a" => "annoying",
+            _ => "skipped",
+        },
+        PromptOutcome::Timeout => "timeout",
+        PromptOutcome::Eof => "skipped",
+        PromptOutcome::IoError(msg) => {
+            tracing::error!("eval stdin read error: {msg}");
+            "error"
+        }
     };
 
     let rating = Rating {
@@ -95,25 +151,25 @@ async fn handle_prompt(prompt: &AlertPrompt, ratings_path: &PathBuf) {
     };
 
     if let Err(e) = append_rating(ratings_path, &rating).await {
-        tracing::warn!("Failed to write rating: {:?}", e);
+        tracing::error!("Failed to write rating to {:?}: {:?}", ratings_path, e);
+        if let Err(e2) = append_rating(fallback_path, &rating).await {
+            tracing::error!(
+                "Also failed fallback write to {:?}: {:?}. Raw line: {:?}",
+                fallback_path, e2, rating,
+            );
+        }
     }
 }
 
-/// Read one line from stdin, returning None on timeout or error.
-async fn read_line_with_timeout(timeout_secs: u64) -> Option<String> {
-    let stdin = tokio::io::stdin();
-    let mut reader = tokio::io::BufReader::new(stdin);
-    let mut line = String::new();
-
-    let result = tokio::time::timeout(
-        Duration::from_secs(timeout_secs),
-        reader.read_line(&mut line),
-    )
-    .await;
-
-    match result {
-        Ok(Ok(_)) => Some(line),
-        _ => None,
+/// Wait for the next stdin outcome, or time out after `timeout_secs`.
+async fn next_outcome(
+    line_rx: &mut mpsc::UnboundedReceiver<PromptOutcome>,
+    timeout_secs: u64,
+) -> PromptOutcome {
+    match tokio::time::timeout(Duration::from_secs(timeout_secs), line_rx.recv()).await {
+        Ok(Some(o)) => o,
+        Ok(None) => PromptOutcome::Eof,
+        Err(_) => PromptOutcome::Timeout,
     }
 }
 

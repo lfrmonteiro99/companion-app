@@ -23,6 +23,7 @@ pub struct ContextEvent {
 
 fn build_event(
     current_app: &Option<String>,
+    current_window_title: &Option<String>,
     last_screen_text: &str,
     recent_transcripts: &VecDeque<String>,
     app_started_at: &Instant,
@@ -56,7 +57,7 @@ fn build_event(
     ContextEvent {
         timestamp: Utc::now(),
         app: current_app.clone(),
-        window_title: None,
+        window_title: current_window_title.clone(),
         screen_text_excerpt,
         mic_text_recent,
         duration_on_app_seconds,
@@ -71,6 +72,7 @@ pub async fn run(
     cfg: Arc<Config>,
 ) -> Result<()> {
     let mut current_app: Option<String> = None;
+    let mut current_window_title: Option<String> = None;
     let mut app_started_at = Instant::now();
     let mut last_screen_text = String::new();
     let mut recent_transcripts: VecDeque<String> = VecDeque::new();
@@ -93,6 +95,13 @@ pub async fn run(
                     None => { ocr_open = false; }
                     Some(ocr) => {
                         last_screen_text = ocr.full_text.clone();
+                        // title_bar_text comes from either a11y (window title)
+                        // or OCR of the top strip. Treat empty as unknown.
+                        current_window_title = if ocr.title_bar_text.trim().is_empty() {
+                            None
+                        } else {
+                            Some(ocr.title_bar_text.trim().to_string())
+                        };
 
                         let new_app = ocr.inferred_app_name.clone();
                         let app_changed = new_app != current_app;
@@ -109,6 +118,7 @@ pub async fn run(
                             // App change is important — emit immediately.
                             let event = build_event(
                                 &current_app,
+                                &current_window_title,
                                 &last_screen_text,
                                 &recent_transcripts,
                                 &app_started_at,
@@ -137,6 +147,7 @@ pub async fn run(
             _ = interval.tick() => {
                 let event = build_event(
                     &current_app,
+                    &current_window_title,
                     &last_screen_text,
                     &recent_transcripts,
                     &app_started_at,

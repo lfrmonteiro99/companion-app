@@ -17,6 +17,11 @@ pub struct FilterResponse {
     pub tokens_in: u32,
     pub tokens_out: u32,
     pub cost_usd: f64,
+    /// Set when the model's response could not be parsed as the expected JSON
+    /// schema. Tokens were still spent — caller should deduct `cost_usd` but
+    /// must NOT treat other fields as meaningful signal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parse_error: Option<String>,
 }
 
 // ── Internal request / response structs ──────────────────────────────────────
@@ -287,8 +292,8 @@ impl OpenAiClient {
             let raw: FilterResponseRaw = match serde_json::from_str(&raw_content) {
                 Ok(r) => r,
                 Err(e) => {
-                    tracing::warn!(
-                        "Failed to parse FilterResponse JSON ({}): {:?}",
+                    tracing::error!(
+                        "api: failed to parse FilterResponse JSON ({}): {:?}",
                         e,
                         raw_content
                     );
@@ -301,6 +306,7 @@ impl OpenAiClient {
                         tokens_in,
                         tokens_out,
                         cost_usd,
+                        parse_error: Some(e.to_string()),
                     });
                 }
             };
@@ -314,6 +320,7 @@ impl OpenAiClient {
                 tokens_in,
                 tokens_out,
                 cost_usd,
+                parse_error: None,
             });
         }
 

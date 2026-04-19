@@ -104,6 +104,10 @@ async fn run(args: RunArgs) -> Result<()> {
         cfg.output_dir,
         log_path,
     );
+    tracing::info!(
+        "features: full={}",
+        cfg!(feature = "full"),
+    );
 
     // One-time, non-fatal: ensure Chromium/Electron launchers pass
     // --force-renderer-accessibility so AT-SPI sees their content.
@@ -255,6 +259,9 @@ async fn run(args: RunArgs) -> Result<()> {
     // Gate + API loop — runs on the main async task
     let mut gate_state = GateState::default();
     let mut tick_id: u64 = 0;
+    // Global min-interval cooldown between API sends. Bypassed for the
+    // "emotional" gate reason (user wants immediate feedback on frustration).
+    let mut last_api_call_at: Option<std::time::Instant> = None;
 
     loop {
         tokio::select! {
@@ -289,8 +296,20 @@ async fn run(args: RunArgs) -> Result<()> {
                 );
 
                 let (api_response, api_ms) = if decision.action == GateAction::Send {
-                    {
-                        let b = budget.lock().await;
+                    // Global min-interval cooldown. Emotional events bypass.
+                    let cooldown_ok = decision.reason == "emotional"
+                        || last_api_call_at.map_or(true, |t| {
+                            t.elapsed()
+                                >= std::time::Duration::from_secs(cfg.min_send_interval_seconds)
+                        });
+                    if !cooldown_ok {
+                        tracing::debug!(
+                            "tick={tick_id} send suppressed by min-interval cooldown ({}s)",
+                            cfg.min_send_interval_seconds
+                        );
+                        (None, None)
+                    } else {
+                    let b = budget.lock().await;
                         if b.remaining() < 0.0001 {
                             tracing::warn!("Budget exhausted — API disabled");
                             (None, None)
@@ -311,9 +330,19 @@ async fn run(args: RunArgs) -> Result<()> {
                             match backend.analyze(&event, img_ref, &mem_str, &decision.reason).await {
                                 Ok(resp) => {
                                     let ms = t1.elapsed().as_millis() as u64;
+                                    last_api_call_at = Some(std::time::Instant::now());
                                     let mut b = budget.lock().await;
                                     match b.try_spend(resp.cost_usd) {
                                         Ok(_) => {
+                                            // If the model's JSON failed to parse, cost was still
+                                            // spent (deducted above), but treat the response as
+                                            // signal-less: skip alert dispatch and memory update.
+                                            if let Some(msg) = &resp.parse_error {
+                                                tracing::error!(
+                                                    "tick={tick_id} API returned unparseable JSON: {msg}; skipping alert"
+                                                );
+                                                (Some(resp), Some(ms))
+                                            } else {
                                             // Force alert when gate fires emotional — user asked
                                             // for commentary whenever frustration keywords hit,
                                             // regardless of the model's own should_alert verdict.
@@ -367,6 +396,7 @@ async fn run(args: RunArgs) -> Result<()> {
                                                 }
                                             }
                                             (Some(resp), Some(ms))
+                                            }
                                         }
                                         Err(e) => {
                                             tracing::error!("{e}");

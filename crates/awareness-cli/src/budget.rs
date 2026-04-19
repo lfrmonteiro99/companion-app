@@ -50,8 +50,23 @@ impl BudgetController {
 
     fn save_state(&self) {
         let state = BudgetState { spent_usd: self.spent_usd, day: self.day };
-        if let Ok(json) = serde_json::to_string(&state) {
-            let _ = std::fs::write(&self.state_path, json);
+        let json = match serde_json::to_string(&state) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::error!("budget: serialize failed: {e}");
+                return;
+            }
+        };
+        let tmp = self.state_path.with_extension("json.tmp");
+        if let Err(e) = std::fs::write(&tmp, &json) {
+            tracing::error!("budget: write {:?} failed: {e}", tmp);
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp, &self.state_path) {
+            tracing::error!(
+                "budget: rename {:?} -> {:?} failed: {e}",
+                tmp, self.state_path
+            );
         }
     }
 

@@ -33,12 +33,6 @@ fn new_words_count(current: &str, previous: &str) -> usize {
     current.split_whitespace().filter(|w| !prev.contains(w)).count()
 }
 
-const FRUSTRATION_KEYWORDS: &[&str] = &[
-    "não percebo", "não funciona", "por amor", "merda", "caralho",
-    "wtf", "why the hell", "this is broken", "not working", "foda-se",
-    "impossível", "broken", "crash", "error", "failed",
-];
-
 /// Pure function: given event + state + config → decision + updated state.
 pub fn evaluate(
     event: &ContextEvent,
@@ -74,9 +68,13 @@ pub fn evaluate(
         .unwrap_or("")
         .to_lowercase();
     let screen_lower = event.screen_text_excerpt.to_lowercase();
-    let has_frustration = FRUSTRATION_KEYWORDS
+    let has_frustration = cfg
+        .gate_frustration_keywords
         .iter()
-        .any(|kw| mic_lower.contains(kw) || screen_lower.contains(kw));
+        .any(|kw| {
+            let kw_lower = kw.to_lowercase();
+            mic_lower.contains(&kw_lower) || screen_lower.contains(&kw_lower)
+        });
 
     if has_frustration {
         state.last_sent_at = Some(Utc::now());
@@ -163,6 +161,8 @@ mod tests {
             gate_periodic_check_minutes: 15,
             gate_text_new_words_threshold: 5,
             gate_text_change_cooldown_seconds: 6,
+            gate_frustration_keywords: crate::config_file::default_frustration_keywords(),
+            min_send_interval_seconds: 15,
             output_dir: std::path::PathBuf::from("data"),
             log_level: "info".to_string(),
             a11y_script: std::path::PathBuf::from("scripts/a11y_dump.py"),

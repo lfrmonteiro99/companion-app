@@ -10,7 +10,7 @@ use crate::config::Config;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilterResponse {
     pub should_alert: bool,
-    pub alert_type: String,       // "focus"|"time_spent"|"emotional"|"preparation"|"none"
+    pub alert_type: String,       // "focus"|"time_spent"|"emotional"|"preparation"|"voice_reply"|"none"
     pub urgency: String,          // "low"|"medium"|"high"
     pub needs_deep_analysis: bool,
     pub quick_message: String,
@@ -125,7 +125,9 @@ should_alert=true apenas quando existe UMA DAS SEGUINTES e tens detalhe específ
 - Código com bug real ou anti-pattern visível e sugestão concreta.
 - Evento iminente na agenda enquanto o utilizador faz outra coisa.
 - Contradição entre apps ou mudança de contexto acidental.
-- Sinal explícito de frustração (texto ou voz) com sugestão de próximo passo.
+- Sinal explícito de frustração (texto ou voz) com sugestão de próximo passo. Usa alert_type="emotional".
+- **Pergunta ou comando falado**: se mic_text_recent contém uma pergunta directa ("o que é X?", "qual a diferença entre A e B?", "como faço Y?") ou um comando ("lembra-me de…", "resume isto", "explica-me…"), RESPONDE em quick_message com alert_type="voice_reply". Cita a pergunta em 3-6 palavras e dá uma resposta concreta de 1-2 frases. Se não sabes responder com certeza, diz o que é preciso para responder em vez de inventar.
+- **Sinal emocional/stress só por voz**: se o tom ou as palavras em mic_text_recent indicam frustração, confusão ou cansaço (mesmo sem keywords explícitas), alert_type="emotional". Cita a frase curta e propõe 1 passo concreto (pausa, próximo debug step, reformular abordagem).
 - **Facto errado em texto que o utilizador está a escrever** (documento, email, mensagem, chat, wiki) sobre algo verificável publicamente (datas históricas, factos científicos, matemática, sintaxe técnica, APIs, nomes oficiais). APENAS se tens ≥90% de confiança. Cita literalmente o que escreveu e indica o que é correcto.
   - NÃO alertes sobre: opiniões, juízos, frases hipotéticas, especulação, ficção, sarcasmo, citações atribuídas a outros, nomes próprios obscuros, detalhes privados, rascunhos.
   - Se ambíguo, NÃO alertes.
@@ -180,7 +182,7 @@ URGENCY
 Responde SEMPRE JSON válido neste schema exacto:
 {
   "should_alert": boolean,
-  "alert_type": "focus" | "time_spent" | "emotional" | "preparation" | "none",
+  "alert_type": "focus" | "time_spent" | "emotional" | "preparation" | "voice_reply" | "none",
   "urgency": "low" | "medium" | "high",
   "needs_deep_analysis": boolean,
   "quick_message": string

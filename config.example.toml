@@ -15,8 +15,22 @@ app_time_threshold_minutes = 25
 periodic_check_minutes = 2
 text_new_words_threshold = 5
 text_change_cooldown_seconds = 6
+# Minimum seconds between voice_activity sends. Lower = more responsive
+# always-listen alerts, but higher OpenAI spend on a talkative day.
+voice_cooldown_seconds = 5
 
 [runtime]
 # Minimum wall-clock interval between API sends, across all gate rules.
 # "emotional" events bypass this cooldown.
 min_send_interval_seconds = 15
+# Rolling mic-transcript window: how many recent whisper chunks get joined
+# into the context passed to the AI. More context = better voice_reply answers,
+# but longer prompts = higher cost.
+transcript_window_size = 5
+
+[tts]
+# Speak alert messages aloud in addition to the desktop notification.
+enabled = true
+# Override the TTS binary. Leave unset to auto-detect:
+# spd-say (speech-dispatcher) > espeak-ng > espeak > say (macOS).
+# command = "spd-say"

@@ -8,6 +8,7 @@ use serde::Deserialize;
 pub struct ConfigFile {
     pub gate: GateSection,
     pub runtime: RuntimeSection,
+    pub tts: TtsSection,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -24,12 +25,21 @@ pub struct GateTuning {
     pub periodic_check_minutes: Option<u64>,
     pub text_new_words_threshold: Option<usize>,
     pub text_change_cooldown_seconds: Option<u64>,
+    pub voice_cooldown_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct RuntimeSection {
     pub min_send_interval_seconds: Option<u64>,
+    pub transcript_window_size: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct TtsSection {
+    pub enabled: Option<bool>,
+    pub command: Option<String>,
 }
 
 impl ConfigFile {

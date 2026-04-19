@@ -5,8 +5,7 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
-use crate::aggregator::ContextEvent;
-use crate::api::FilterResponse;
+use awareness_core::types::{ContextEvent, FilterResponse};
 use crate::gate::GateDecision;
 use crate::tts::{self, TtsConfig};
 
@@ -198,6 +197,11 @@ async fn append_rating(path: &PathBuf, rating: &Rating) -> Result<()> {
         .await?;
 
     file.write_all(line.as_bytes()).await?;
+    // tokio::fs::File's Drop does not await the close — without an
+    // explicit flush the bytes may still be buffered on the blocking
+    // IO thread when the caller (or a test) reads the file back. Under
+    // CI load this surfaces as a flaky "file is empty" failure.
+    file.flush().await?;
     Ok(())
 }
 

@@ -4,8 +4,7 @@ use reqwest::Client;
 use serde::Serialize;
 use std::time::Duration;
 
-use crate::aggregator::ContextEvent;
-use crate::api::FilterResponse;
+use crate::types::{ContextEvent, FilterResponse};
 use crate::config::Config;
 
 // ── Request structs ──────────────────────────────────────────────────────────

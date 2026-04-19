@@ -1,0 +1,42 @@
+name: CI
+
+# Runs on every pull request. Cheap gate: just the cross-platform tests
+# (no Android NDK, no APK build). The release workflow handles the
+# heavy build on main.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches-ignore: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: short
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+        continue-on-error: true
+
+      - name: cargo test --workspace --no-default-features
+        run: cargo test --workspace --no-default-features --locked
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --no-default-features -- -D warnings
+        continue-on-error: true

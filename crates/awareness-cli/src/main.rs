@@ -5,8 +5,8 @@ use tokio::sync::{mpsc, Mutex};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use awareness_cli::a11y;
-use awareness_cli::aggregator::{self, ContextEvent};
-use awareness_cli::api::FilterResponse;
+use awareness_cli::aggregator;
+use awareness_core::types::{ContextEvent, FilterResponse};
 use awareness_cli::audio;
 use awareness_cli::backend::Backend;
 use awareness_cli::budget::BudgetController;

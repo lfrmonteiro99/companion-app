@@ -2,27 +2,8 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use crate::aggregator::ContextEvent;
+use crate::types::{ContextEvent, FilterResponse};
 use crate::config::Config;
-
-// ── Public types ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FilterResponse {
-    pub should_alert: bool,
-    pub alert_type: String,       // "focus"|"time_spent"|"emotional"|"preparation"|"voice_reply"|"none"
-    pub urgency: String,          // "low"|"medium"|"high"
-    pub needs_deep_analysis: bool,
-    pub quick_message: String,
-    pub tokens_in: u32,
-    pub tokens_out: u32,
-    pub cost_usd: f64,
-    /// Set when the model's response could not be parsed as the expected JSON
-    /// schema. Tokens were still spent — caller should deduct `cost_usd` but
-    /// must NOT treat other fields as meaningful signal.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parse_error: Option<String>,
-}
 
 // ── Internal request / response structs ──────────────────────────────────────
 
@@ -190,6 +171,7 @@ Responde SEMPRE JSON válido neste schema exacto:
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct OpenAiClient {
     http: Client,
     api_key: String,
@@ -197,14 +179,18 @@ pub struct OpenAiClient {
 
 impl OpenAiClient {
     pub fn new(cfg: &Config) -> Result<Self> {
+        Self::with_api_key(cfg.openai_api_key.clone())
+    }
+
+    /// Build an `OpenAiClient` directly from an API key, skipping the full
+    /// `Config` struct. Used by the Android frontend, which assembles
+    /// context on the Kotlin side and doesn't need CLI-specific config fields.
+    pub fn with_api_key(api_key: String) -> Result<Self> {
         let http = Client::builder()
             .timeout(Duration::from_secs(8))
             .build()
             .context("failed to build HTTP client")?;
-        Ok(Self {
-            http,
-            api_key: cfg.openai_api_key.clone(),
-        })
+        Ok(Self { http, api_key })
     }
 
     pub async fn filter_call(&self, event: &ContextEvent, memory: &str) -> Result<FilterResponse> {
@@ -372,6 +358,14 @@ mod tests {
         assert_eq!(back.parse_error.as_deref(), Some("boom"));
         assert_eq!(back.tokens_in, 10);
         assert_eq!(back.tokens_out, 20);
+    }
+
+    #[test]
+    fn with_api_key_builds_client_without_full_config() {
+        // Android frontend path: no Config struct, just an API key.
+        let client = OpenAiClient::with_api_key("sk-dummy".into())
+            .expect("client must build");
+        assert_eq!(client.api_key, "sk-dummy");
     }
 
     #[test]

@@ -1,6 +1,5 @@
 use anyhow::Result;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::Utc;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
@@ -9,22 +8,7 @@ use crate::config::Config;
 use crate::ocr::OcrOutput;
 use crate::whisper::TranscriptChunk;
 
-/// The central event type. Passed to the gate, then API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContextEvent {
-    pub timestamp: DateTime<Utc>,
-    pub app: Option<String>,
-    pub window_title: Option<String>,
-    pub screen_text_excerpt: String,
-    pub mic_text_recent: Option<String>,
-    pub duration_on_app_seconds: u64,
-    pub history_apps_30min: Vec<(String, u64)>,
-    /// True only when the event was emitted because a fresh transcript just
-    /// arrived. Used by the gate's voice_activity rule to distinguish new
-    /// speech from stale buffer contents on periodic ticks.
-    #[serde(default)]
-    pub mic_text_new: bool,
-}
+pub use awareness_core::types::ContextEvent;
 
 fn build_event(
     current_app: &Option<String>,

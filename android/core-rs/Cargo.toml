@@ -1,0 +1,22 @@
+[package]
+name = "awareness-core-android"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "awareness_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = { version = "0.21", default-features = false }
+serde_json = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+tracing = "0.1"
+android_logger = "0.14"
+log = "0.4"
+
+# The cross-platform Rust pipeline. No Linux-only deps land here because
+# `awareness-core` has none; the Linux-specific code lives in the sibling
+# `awareness-cli` crate which Android does not depend on.
+awareness-core = { path = "../../crates/awareness-core" }

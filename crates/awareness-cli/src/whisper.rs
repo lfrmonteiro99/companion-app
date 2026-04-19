@@ -1,19 +1,9 @@
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use std::path::Path;
 
 use crate::audio::AudioChunk;
 
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct TranscriptChunk {
-    pub started_at: DateTime<Utc>,
-    pub text: String,
-    /// Detected language code, e.g. "pt" or "en". "unknown" when not available.
-    pub language: String,
-    /// Approximated confidence in [0.0, 1.0].
-    pub confidence: f32,
-}
+pub use awareness_core::types::TranscriptChunk;
 
 /// Whisper transcription engine.
 #[allow(dead_code)]

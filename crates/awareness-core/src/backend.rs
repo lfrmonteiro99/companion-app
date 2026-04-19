@@ -1,7 +1,7 @@
 use anyhow::Result;
 
-use crate::aggregator::ContextEvent;
-use crate::api::{FilterResponse, OpenAiClient};
+use crate::types::{ContextEvent, FilterResponse};
+use crate::api::OpenAiClient;
 use crate::api_vision::VisionClient;
 use crate::config::Config;
 

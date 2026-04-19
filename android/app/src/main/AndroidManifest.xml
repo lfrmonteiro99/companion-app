@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!--
+      Foreground-app detection. Protected permission — the user must
+      grant it manually via Settings > Apps > Special app access >
+      Usage access. Lint flags this as "ProtectedPermissions", which is
+      expected here.
+    -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+
+    <application
+        android:label="@string/app_name"
+        android:theme="@style/Theme.Awareness"
+        android:allowBackup="false"
+        android:supportsRtl="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".HistoryActivity"
+            android:exported="false"
+            android:label="@string/history_title"
+            android:parentActivityName=".MainActivity" />
+
+        <service
+            android:name=".AwarenessService"
+            android:foregroundServiceType="mediaProjection|microphone"
+            android:exported="false" />
+
+        <!--
+          Optional accessibility service. The user must enable it in
+          Settings > Accessibility > Awareness. When enabled, we pull
+          visible text from the focused window directly (faster and
+          cleaner than OCR over MediaProjection).
+        -->
+        <service
+            android:name=".AwarenessAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+    </application>
+</manifest>

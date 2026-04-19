@@ -1,7 +1,10 @@
 pub mod config;
+pub mod config_file;
 pub mod budget;
 pub mod jsonl;
 pub mod capture;
+#[cfg(feature = "portal")]
+pub mod capture_portal;
 pub mod audio;
 pub mod ocr;
 pub mod a11y;

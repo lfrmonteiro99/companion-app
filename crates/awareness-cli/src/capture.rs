@@ -40,39 +40,27 @@ pub async fn spawn_screen_capture(
 }
 
 async fn capture_loop(tx: mpsc::Sender<ScreenFrame>, cfg: Arc<Config>) {
-    #[cfg(feature = "full")]
+    #[cfg(feature = "portal")]
     {
-        // Try the ashpd portal path first.
-        match try_portal_capture(tx.clone(), cfg.clone()).await {
+        use crate::capture_portal::{self, PortalError};
+        match capture_portal::run(tx.clone(), cfg.clone()).await {
             Ok(()) => return,
+            Err(PortalError::UserCancelled) => {
+                tracing::warn!("Portal permission declined — falling back to sidecar. \
+                    Screenshots will be visible (flash/beep on GNOME). \
+                    Re-run and accept the dialog to restore silent capture.");
+            }
+            Err(PortalError::NoPortal(msg)) => {
+                tracing::info!("No xdg-desktop-portal detected ({msg}) — using sidecar.");
+            }
             Err(e) => {
-                tracing::warn!("Portal capture failed ({}), falling back to sidecar", e);
+                tracing::warn!("Portal capture failed: {e}. Falling back to sidecar.");
             }
         }
     }
 
     // Sidecar path: always compiled.
     sidecar_capture_loop(tx, cfg).await;
-}
-
-// ---------------------------------------------------------------------------
-// Portal path (feature = "full")
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "full")]
-async fn try_portal_capture(
-    tx: mpsc::Sender<ScreenFrame>,
-    cfg: Arc<Config>,
-) -> Result<()> {
-    // PipeWire frame consumption not yet implemented — fall back to sidecar.
-    anyhow::bail!("Portal capture not yet implemented; using sidecar fallback");
-
-    // Silence dead-code warnings for bindings used above.
-    #[allow(unreachable_code)]
-    {
-        let _ = (tx, cfg);
-        Ok(())
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -402,7 +402,7 @@ impl VisionClient {
             let raw: FilterResponseRaw = match serde_json::from_str(&raw_content) {
                 Ok(r) => r,
                 Err(e) => {
-                    tracing::warn!(
+                    tracing::error!(
                         "vision: parse FilterResponse JSON failed ({}): {:?}",
                         e,
                         raw_content
@@ -416,6 +416,7 @@ impl VisionClient {
                         tokens_in,
                         tokens_out,
                         cost_usd,
+                        parse_error: Some(e.to_string()),
                     });
                 }
             };
@@ -429,6 +430,7 @@ impl VisionClient {
                 tokens_in,
                 tokens_out,
                 cost_usd,
+                parse_error: None,
             });
         }
 

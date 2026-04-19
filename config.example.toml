@@ -1,0 +1,22 @@
+# Non-secret runtime configuration. Copy to `config.toml` to activate.
+# Values here are overridden by CLI flags of the same name.
+
+[gate]
+# Keywords that force an immediate API send on the "emotional" gate rule.
+# Case-insensitive. Match against both mic transcripts and on-screen text.
+frustration_keywords = [
+  "não percebo", "não funciona", "por amor", "merda", "caralho",
+  "wtf", "why the hell", "this is broken", "not working", "foda-se",
+  "impossível", "broken", "crash", "error", "failed",
+]
+
+[gate.tuning]
+app_time_threshold_minutes = 25
+periodic_check_minutes = 2
+text_new_words_threshold = 5
+text_change_cooldown_seconds = 6
+
+[runtime]
+# Minimum wall-clock interval between API sends, across all gate rules.
+# "emotional" events bypass this cooldown.
+min_send_interval_seconds = 15

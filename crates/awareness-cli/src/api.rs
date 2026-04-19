@@ -17,6 +17,11 @@ pub struct FilterResponse {
     pub tokens_in: u32,
     pub tokens_out: u32,
     pub cost_usd: f64,
+    /// Set when the model's response could not be parsed as the expected JSON
+    /// schema. Tokens were still spent — caller should deduct `cost_usd` but
+    /// must NOT treat other fields as meaningful signal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parse_error: Option<String>,
 }
 
 // ── Internal request / response structs ──────────────────────────────────────
@@ -287,8 +292,8 @@ impl OpenAiClient {
             let raw: FilterResponseRaw = match serde_json::from_str(&raw_content) {
                 Ok(r) => r,
                 Err(e) => {
-                    tracing::warn!(
-                        "Failed to parse FilterResponse JSON ({}): {:?}",
+                    tracing::error!(
+                        "api: failed to parse FilterResponse JSON ({}): {:?}",
                         e,
                         raw_content
                     );
@@ -301,6 +306,7 @@ impl OpenAiClient {
                         tokens_in,
                         tokens_out,
                         cost_usd,
+                        parse_error: Some(e.to_string()),
                     });
                 }
             };
@@ -314,9 +320,74 @@ impl OpenAiClient {
                 tokens_in,
                 tokens_out,
                 cost_usd,
+                parse_error: None,
             });
         }
 
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("all retries exhausted")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(parse_error: Option<String>) -> FilterResponse {
+        FilterResponse {
+            should_alert: false,
+            alert_type: "none".into(),
+            urgency: "low".into(),
+            needs_deep_analysis: false,
+            quick_message: String::new(),
+            tokens_in: 10,
+            tokens_out: 20,
+            cost_usd: 0.000018,
+            parse_error,
+        }
+    }
+
+    #[test]
+    fn parse_error_absent_when_none() {
+        let r = sample(None);
+        let s = serde_json::to_string(&r).unwrap();
+        // skip_serializing_if = "Option::is_none" must drop the field entirely.
+        assert!(!s.contains("parse_error"), "serialized JSON should omit parse_error: {s}");
+    }
+
+    #[test]
+    fn parse_error_present_when_some() {
+        let r = sample(Some("schema mismatch".into()));
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains("parse_error"), "JSON must contain parse_error field: {s}");
+        assert!(s.contains("schema mismatch"));
+    }
+
+    #[test]
+    fn parse_error_round_trips() {
+        let r = sample(Some("boom".into()));
+        let s = serde_json::to_string(&r).unwrap();
+        let back: FilterResponse = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.parse_error.as_deref(), Some("boom"));
+        assert_eq!(back.tokens_in, 10);
+        assert_eq!(back.tokens_out, 20);
+    }
+
+    #[test]
+    fn deserializing_legacy_json_without_parse_error_is_ok() {
+        // JSONL persisted by previous versions won't carry parse_error —
+        // the #[serde(default)] must keep old logs readable.
+        let legacy = r#"{
+          "should_alert": true,
+          "alert_type": "emotional",
+          "urgency": "high",
+          "needs_deep_analysis": false,
+          "quick_message": "oops",
+          "tokens_in": 5,
+          "tokens_out": 6,
+          "cost_usd": 0.0001
+        }"#;
+        let r: FilterResponse = serde_json::from_str(legacy).unwrap();
+        assert_eq!(r.parse_error, None);
+        assert!(r.should_alert);
     }
 }

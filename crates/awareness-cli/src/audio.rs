@@ -39,6 +39,11 @@ pub async fn spawn_mic_capture(
     #[cfg(not(feature = "full"))]
     {
         let _ = tx;
+        tracing::warn!(
+            "Audio capture disabled: built without --features full. \
+             Mic transcripts will be empty. \
+             Rebuild with 'cargo build --features full' to enable."
+        );
         let handle = tokio::spawn(async {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;

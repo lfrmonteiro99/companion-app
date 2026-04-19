@@ -4,6 +4,7 @@ Phase -1 validation script for awareness-poc.
 Validates whether proactive context-based feedback has product value,
 before any Rust code is written.
 """
+from __future__ import annotations
 
 import argparse
 import json
@@ -14,9 +15,10 @@ import subprocess
 import sys
 import time
 from collections import deque
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 try:
     from dotenv import load_dotenv
@@ -114,7 +116,7 @@ def relative_minutes(past: datetime, now: datetime) -> str:
 
 
 # ── Screenshot ──────────────────────────────────────────────────────────────
-def take_screenshot(output_dir: Path) -> tuple[str, Image.Image]:
+def take_screenshot(output_dir: Path) -> Tuple[str, Image.Image]:
     shots_dir = output_dir / "shots"
     shots_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -131,7 +133,7 @@ def take_screenshot(output_dir: Path) -> tuple[str, Image.Image]:
             img = Image.open(BytesIO(result.stdout))
             img.save(str(path))
             return str(path), img
-    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
 
     # Try gnome-screenshot via XWayland (GNOME/Mutter)
@@ -144,7 +146,7 @@ def take_screenshot(output_dir: Path) -> tuple[str, Image.Image]:
             img = Image.open(tmp_path)
             img.save(str(path))
             return str(path), img
-    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
 
     # Try scrot via XWayland
@@ -157,7 +159,7 @@ def take_screenshot(output_dir: Path) -> tuple[str, Image.Image]:
             img = Image.open(tmp_path)
             img.save(str(path))
             return str(path), img
-    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
 
     raise RuntimeError(
@@ -175,8 +177,16 @@ def extract_text(image: Image.Image) -> str:
 
 
 # ── OpenAI call ─────────────────────────────────────────────────────────────
-def call_openai(client: openai.OpenAI, context_payload: dict) -> tuple[dict, int, int]:
-    """Returns (parsed_response, input_tokens, output_tokens)."""
+def call_openai(
+    client: openai.OpenAI,
+    context_payload: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], int, int, Optional[str]]:
+    """Returns (parsed_response, input_tokens, output_tokens, parse_error).
+
+    parse_error is set when the model's output was not valid JSON. Cost is
+    still accounted via the token counts. Callers must treat parsed=None as
+    "no signal" rather than as a legitimate "no alert" response.
+    """
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         max_tokens=150,
@@ -192,15 +202,16 @@ def call_openai(client: openai.OpenAI, context_payload: dict) -> tuple[dict, int
     output_tokens = response.usage.completion_tokens if response.usage else 0
 
     try:
-        parsed = json.loads(raw_text)
-    except json.JSONDecodeError:
-        print(f"  [warn] Failed to parse API JSON: {raw_text[:200]}", file=sys.stderr)
-        parsed = None
+        parsed: Optional[Dict[str, Any]] = json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        err = f"{e.__class__.__name__}: {e}"
+        print(f"  [error] Failed to parse API JSON ({err}): {raw_text[:200]}", file=sys.stderr)
+        return None, input_tokens, output_tokens, err
 
-    return parsed, input_tokens, output_tokens
+    return parsed, input_tokens, output_tokens, None
 
 
-def mock_response() -> tuple[dict, int, int]:
+def mock_response() -> Tuple[Dict[str, Any], int, int, None]:
     return (
         {
             "should_alert": True,
@@ -211,11 +222,12 @@ def mock_response() -> tuple[dict, int, int]:
         },
         0,
         0,
+        None,
     )
 
 
 # ── Rating prompt ────────────────────────────────────────────────────────────
-def ask_rating() -> str | None:
+def ask_rating() -> Optional[str]:
     """Non-blocking stdin read with 30s timeout. Returns rating string or None."""
     sys.stdout.write("Rating [u=useful / n=not_useful / a=annoying / <enter>=skip]: ")
     sys.stdout.flush()
@@ -267,14 +279,14 @@ def main() -> None:
     jsonl_path = output_dir / "runs" / f"{today_str}.jsonl"
 
     # ── State ────────────────────────────────────────────────────────────────
-    history: deque[dict] = deque(maxlen=5)
-    cumulative_cost = 0.0
-    tick_id         = 0
-    alerts_shown    = 0
-    rating_counts: dict[str, int] = {}
+    history: deque[Dict[str, Any]] = deque(maxlen=5)
+    cumulative_cost: float = 0.0
+    tick_id: int = 0
+    alerts_shown: int = 0
+    rating_counts: Dict[str, int] = {}
 
     # ── SIGINT handler ───────────────────────────────────────────────────────
-    def handle_sigint(sig, frame):
+    def handle_sigint(sig: int, frame: Any) -> None:
         print()
         print(bold("\n=== Session summary ==="))
         print(f"  Ticks     : {tick_id}")
@@ -354,9 +366,9 @@ def main() -> None:
         # ── API call ─────────────────────────────────────────────────────────
         t2 = time.monotonic()
         if args.dry_run:
-            parsed, input_tokens, output_tokens = mock_response()
+            parsed, input_tokens, output_tokens, parse_error = mock_response()
         else:
-            parsed, input_tokens, output_tokens = call_openai(client, context_payload)
+            parsed, input_tokens, output_tokens, parse_error = call_openai(client, context_payload)
         api_ms = int((time.monotonic() - t2) * 1000)
 
         tick_cost = (
@@ -397,7 +409,7 @@ def main() -> None:
                   f"— \"{parsed.get('quick_message', '')}\"")
 
         else:
-            print("  API returned unparseable response — skipping alert.")
+            print(red(f"  API returned unparseable response ({parse_error}) — skipping alert."))
 
         # ── Write JSONL ───────────────────────────────────────────────────────
         record = {

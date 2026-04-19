@@ -5,24 +5,7 @@ use std::time::Duration;
 use crate::aggregator::ContextEvent;
 use crate::config::Config;
 
-// ── Public types ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FilterResponse {
-    pub should_alert: bool,
-    pub alert_type: String,       // "focus"|"time_spent"|"emotional"|"preparation"|"voice_reply"|"none"
-    pub urgency: String,          // "low"|"medium"|"high"
-    pub needs_deep_analysis: bool,
-    pub quick_message: String,
-    pub tokens_in: u32,
-    pub tokens_out: u32,
-    pub cost_usd: f64,
-    /// Set when the model's response could not be parsed as the expected JSON
-    /// schema. Tokens were still spent — caller should deduct `cost_usd` but
-    /// must NOT treat other fields as meaningful signal.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parse_error: Option<String>,
-}
+pub use awareness_core::types::FilterResponse;
 
 // ── Internal request / response structs ──────────────────────────────────────
 

@@ -1,19 +1,11 @@
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::config::Config;
 
-/// Raw audio chunk ready for Whisper.
-/// Samples: PCM i16, 16 kHz, mono.
-#[derive(Debug, Clone)]
-pub struct AudioChunk {
-    pub started_at: DateTime<Utc>,
-    pub samples: Vec<i16>,
-    pub duration_secs: f32,
-}
+pub use awareness_core::types::AudioChunk;
 
 /// Spawns microphone capture loop.
 ///

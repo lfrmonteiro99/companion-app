@@ -2,15 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use image::DynamicImage;
 
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct OcrOutput {
-    pub captured_at: DateTime<Utc>,
-    pub full_text: String,
-    /// OCR of top 60px strip — used to infer app name.
-    pub title_bar_text: String,
-    pub inferred_app_name: Option<String>,
-}
+pub use awareness_core::types::OcrOutput;
 
 /// Extract text from a screen frame using Tesseract OCR.
 #[allow(dead_code)]

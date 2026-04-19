@@ -3,4 +3,5 @@ resolver = "2"
 members = [
     "crates/awareness-cli",
     "crates/awareness-core",
+    "android/core-rs",
 ]

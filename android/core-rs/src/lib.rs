@@ -1,92 +1,111 @@
-//! JNI bridge exposing the cross-platform pieces of `awareness-cli`
-//! (config, budget, gate, dedup, aggregator, api calls) to the Android app.
+//! JNI bridge between the Android app (Kotlin) and the shared Rust
+//! pipeline in `awareness-core`.
 //!
-//! Everything here must stay free of Linux-specific dependencies
-//! (no ashpd, pipewire, cpal, whisper-rs, leptess). Platform capture lives
-//! on the Kotlin side (MediaProjection, AudioRecord, ML Kit OCR) and hands
-//! text/audio into this core via `submitContext`.
+//! Current surface (Phase 1 — screen + notification parity):
+//!
+//!   init()                 — one-time logging setup.
+//!   configure(api_key)     — store the OpenAI key for this process.
+//!   analyze(event_json)    — send a ContextEvent to the filter API,
+//!                            return the JSON FilterResponse for the
+//!                            Kotlin side to turn into a notification.
+//!
+//! Gating, dedup, budget, and memory are intentionally done on the
+//! Kotlin side in Phase 1 (simpler wiring). Later phases can add
+//! `gate_evaluate` / `memory_push` JNI calls reusing the same core
+//! modules (`awareness_core::gate`, `awareness_core::memory`,
+//! `awareness_core::budget`, `awareness_core::dedup`).
 
+use awareness_core::api::OpenAiClient;
+use awareness_core::types::{ContextEvent, FilterResponse};
 use jni::objects::{JClass, JString};
-use jni::sys::{jlong, jstring};
+use jni::sys::jstring;
 use jni::JNIEnv;
-use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use tokio::runtime::Runtime;
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+static CLIENT: OnceLock<Mutex<Option<OpenAiClient>>> = OnceLock::new();
 
 fn runtime() -> &'static Runtime {
-    RUNTIME.get_or_init(|| {
-        Runtime::new().expect("tokio runtime")
-    })
+    RUNTIME.get_or_init(|| Runtime::new().expect("tokio runtime"))
 }
 
-#[derive(Debug, Deserialize)]
-struct ContextInput {
-    app: Option<String>,
-    window_title: Option<String>,
-    screen_text: String,
-    mic_text: Option<String>,
-    duration_on_app_seconds: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct CoreResponse {
-    should_alert: bool,
-    alert_type: String,
-    urgency: String,
-    message: String,
-    tokens_in: u32,
-    tokens_out: u32,
-    cost_usd: f64,
+fn client_slot() -> &'static Mutex<Option<OpenAiClient>> {
+    CLIENT.get_or_init(|| Mutex::new(None))
 }
 
 #[no_mangle]
 pub extern "system" fn Java_com_companion_awareness_CoreBridge_init(
     _env: JNIEnv,
     _class: JClass,
-) -> jlong {
+) {
     android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Info)
             .with_tag("awareness-core"),
     );
     log::info!("awareness-core initialised");
-    1
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_companion_awareness_CoreBridge_submitContext<'local>(
+pub extern "system" fn Java_com_companion_awareness_CoreBridge_configure<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
-    json_input: JString<'local>,
-) -> jstring {
-    let input: String = match env.get_string(&json_input) {
+    api_key: JString<'local>,
+) {
+    let key: String = match env.get_string(&api_key) {
         Ok(s) => s.into(),
-        Err(e) => return error_response(&mut env, &format!("bad input: {e}")),
-    };
-
-    let parsed: ContextInput = match serde_json::from_str(&input) {
-        Ok(p) => p,
-        Err(e) => return error_response(&mut env, &format!("parse: {e}")),
-    };
-
-    // TODO: wire into awareness_cli::{gate, api, budget, dedup}
-    // once the shared modules are factored out of the CLI main loop.
-    let response = runtime().block_on(async move {
-        CoreResponse {
-            should_alert: false,
-            alert_type: "none".into(),
-            urgency: "low".into(),
-            message: format!(
-                "stub: saw {} chars of screen, app={:?}",
-                parsed.screen_text.len(),
-                parsed.app
-            ),
-            tokens_in: 0,
-            tokens_out: 0,
-            cost_usd: 0.0,
+        Err(e) => {
+            log::error!("configure: bad api_key string: {e}");
+            return;
         }
+    };
+    match OpenAiClient::with_api_key(key) {
+        Ok(c) => {
+            *client_slot().lock().unwrap() = Some(c);
+            log::info!("configure: OpenAiClient ready");
+        }
+        Err(e) => log::error!("configure: failed to build client: {e}"),
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    event_json: JString<'local>,
+) -> jstring {
+    let raw: String = match env.get_string(&event_json) {
+        Ok(s) => s.into(),
+        Err(e) => return err_json(&mut env, &format!("bad event string: {e}")),
+    };
+
+    let event: ContextEvent = match serde_json::from_str(&raw) {
+        Ok(e) => e,
+        Err(e) => return err_json(&mut env, &format!("parse ContextEvent: {e}")),
+    };
+
+    let client_guard = client_slot().lock().unwrap();
+    let Some(client) = client_guard.as_ref() else {
+        return err_json(&mut env, "configure() not called");
+    };
+    let client = client.clone();
+    drop(client_guard);
+
+    let response: FilterResponse = runtime().block_on(async move {
+        client.filter_call(&event, "").await.unwrap_or_else(|e| {
+            FilterResponse {
+                should_alert: false,
+                alert_type: "error".into(),
+                urgency: "low".into(),
+                needs_deep_analysis: false,
+                quick_message: format!("api error: {e}"),
+                tokens_in: 0,
+                tokens_out: 0,
+                cost_usd: 0.0,
+                parse_error: Some(e.to_string()),
+            }
+        })
     });
 
     let body = serde_json::to_string(&response).unwrap_or_else(|_| "{}".into());
@@ -95,15 +114,17 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_submitContext<'lo
         .unwrap_or(std::ptr::null_mut())
 }
 
-fn error_response(env: &mut JNIEnv, msg: &str) -> jstring {
+fn err_json(env: &mut JNIEnv, msg: &str) -> jstring {
     let body = serde_json::json!({
         "should_alert": false,
         "alert_type": "error",
         "urgency": "low",
-        "message": msg,
+        "needs_deep_analysis": false,
+        "quick_message": msg,
         "tokens_in": 0,
         "tokens_out": 0,
         "cost_usd": 0.0,
+        "parse_error": msg,
     })
     .to_string();
     env.new_string(body)

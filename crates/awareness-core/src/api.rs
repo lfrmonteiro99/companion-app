@@ -171,6 +171,7 @@ Responde SEMPRE JSON válido neste schema exacto:
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct OpenAiClient {
     http: Client,
     api_key: String,
@@ -178,14 +179,18 @@ pub struct OpenAiClient {
 
 impl OpenAiClient {
     pub fn new(cfg: &Config) -> Result<Self> {
+        Self::with_api_key(cfg.openai_api_key.clone())
+    }
+
+    /// Build an `OpenAiClient` directly from an API key, skipping the full
+    /// `Config` struct. Used by the Android frontend, which assembles
+    /// context on the Kotlin side and doesn't need CLI-specific config fields.
+    pub fn with_api_key(api_key: String) -> Result<Self> {
         let http = Client::builder()
             .timeout(Duration::from_secs(8))
             .build()
             .context("failed to build HTTP client")?;
-        Ok(Self {
-            http,
-            api_key: cfg.openai_api_key.clone(),
-        })
+        Ok(Self { http, api_key })
     }
 
     pub async fn filter_call(&self, event: &ContextEvent, memory: &str) -> Result<FilterResponse> {
@@ -353,6 +358,14 @@ mod tests {
         assert_eq!(back.parse_error.as_deref(), Some("boom"));
         assert_eq!(back.tokens_in, 10);
         assert_eq!(back.tokens_out, 20);
+    }
+
+    #[test]
+    fn with_api_key_builds_client_without_full_config() {
+        // Android frontend path: no Config struct, just an API key.
+        let client = OpenAiClient::with_api_key("sk-dummy".into())
+            .expect("client must build");
+        assert_eq!(client.api_key, "sk-dummy");
     }
 
     #[test]

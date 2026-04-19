@@ -3,8 +3,8 @@ package com.companion.awareness
 /**
  * Kotlin side of the JNI bridge to the shared Rust core.
  *
- * The native library `libawareness_core.so` is produced by
- * `android/core-rs/build.sh` (which uses cargo-ndk) and dropped into
+ * Native library `libawareness_core.so` is produced by
+ * `android/core-rs/build.sh` (which runs cargo-ndk) and lands in
  * `app/src/main/jniLibs/<abi>/`.
  */
 object CoreBridge {
@@ -12,12 +12,23 @@ object CoreBridge {
         System.loadLibrary("awareness_core")
     }
 
-    /** Initialises logging + the tokio runtime inside the core. */
-    external fun init(): Long
+    /** One-time logging setup inside the core. Safe to call twice. */
+    external fun init()
 
     /**
-     * Submits a context event (JSON) and receives a gating decision (JSON).
-     * Schema matches [awareness_core::ContextInput] / [CoreResponse].
+     * Store the OpenAI API key for this process. Must be called before
+     * [analyze]. Losing the process (service killed) requires calling
+     * again on restart — the key itself should live in
+     * `EncryptedSharedPreferences`.
      */
-    external fun submitContext(jsonInput: String): String
+    external fun configure(apiKey: String)
+
+    /**
+     * Submit a [com.companion.awareness.types.ContextEvent]-shaped JSON
+     * and receive a [com.companion.awareness.types.FilterResponse]-shaped
+     * JSON back. Runs the OpenAI filter call inside the core's tokio
+     * runtime; blocks the caller thread, so invoke from a background
+     * coroutine.
+     */
+    external fun analyze(eventJson: String): String
 }

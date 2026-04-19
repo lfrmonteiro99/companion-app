@@ -45,6 +45,7 @@ class AwarenessService : Service() {
             screen = ScreenCapture(this, resultCode, data).also { it.start() }
         }
         audio = AudioCapture(this).also { it.start() }
+        if (Settings.ttsEnabled(this)) Tts.ensureStarted(this)
 
         configureCoreFromStoredKey()
 
@@ -138,6 +139,8 @@ class AwarenessService : Service() {
             .build()
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(alertCounter.incrementAndGet(), notif)
+
+        if (Settings.ttsEnabled(this)) Tts.speak(body)
     }
 
     override fun onDestroy() {
@@ -145,6 +148,7 @@ class AwarenessService : Service() {
         scope.cancel()
         screen?.stop()
         audio?.stop()
+        Tts.shutdown()
         super.onDestroy()
     }
 

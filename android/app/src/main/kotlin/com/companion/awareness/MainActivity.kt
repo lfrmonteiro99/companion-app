@@ -16,7 +16,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.Row
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +53,7 @@ class MainActivity : ComponentActivity() {
                     var apiKey by remember { mutableStateOf(Settings.openAiKey(this@MainActivity)) }
                     var usageGranted by remember { mutableStateOf(FocusedApp.isGranted(this@MainActivity)) }
                     var a11yEnabled by remember { mutableStateOf(AwarenessAccessibilityService.isConnected()) }
+                    var ttsEnabled by remember { mutableStateOf(Settings.ttsEnabled(this@MainActivity)) }
 
                     Column(
                         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -87,6 +90,19 @@ class MainActivity : ComponentActivity() {
                             }) {
                                 Text("Enable accessibility")
                             }
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Text("Speak alerts")
+                            Switch(
+                                checked = ttsEnabled,
+                                onCheckedChange = {
+                                    ttsEnabled = it
+                                    Settings.setTtsEnabled(this@MainActivity, it)
+                                },
+                            )
                         }
                         Text("Status: $status")
                         Button(

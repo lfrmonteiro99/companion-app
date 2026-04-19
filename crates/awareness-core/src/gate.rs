@@ -198,6 +198,7 @@ mod tests {
             log_level: "info".to_string(),
             a11y_script: std::path::PathBuf::from("scripts/a11y_dump.py"),
             backend: crate::backend::BackendKind::Text,
+            vision_sharp_apps: crate::config_file::default_sharp_apps(),
         }
     }
 

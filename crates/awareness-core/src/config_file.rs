@@ -9,6 +9,7 @@ pub struct ConfigFile {
     pub gate: GateSection,
     pub runtime: RuntimeSection,
     pub tts: TtsSection,
+    pub vision: VisionSection,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -40,6 +41,25 @@ pub struct RuntimeSection {
 pub struct TtsSection {
     pub enabled: Option<bool>,
     pub command: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct VisionSection {
+    /// Apps for which the vision backend should use the "sharp" (higher
+    /// detail, more expensive) tier. Matched as a case-insensitive substring
+    /// against `event.app`. When unset, a sensible default list is used.
+    pub sharp_apps: Option<Vec<String>>,
+}
+
+pub fn default_sharp_apps() -> Vec<String> {
+    [
+        "vscode", "cursor", "code", "intellij", "pycharm", "webstorm",
+        "sublime", "atom", "nvim", "neovim", "text_editor", "helix", "zed",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 impl ConfigFile {

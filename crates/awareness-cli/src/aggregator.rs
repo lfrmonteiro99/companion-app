@@ -10,6 +10,15 @@ use crate::whisper::TranscriptChunk;
 
 pub use awareness_core::types::ContextEvent;
 
+/// Max chars sent as screen_text_excerpt. ~2000 tokens — covers most a11y
+/// dumps; dense UIs (Teams, Chrome) get truncated and a debug line is logged.
+const SCREEN_TEXT_MAX_CHARS: usize = 8000;
+
+/// Cap on the retained app_history. Filtering keeps entries in the last 30
+/// minutes, but without a hard cap the deque would grow unbounded for users
+/// who app-switch rapidly. 200 is well above realistic switching rates.
+const APP_HISTORY_MAX: usize = 200;
+
 fn build_event(
     current_app: &Option<String>,
     current_window_title: &Option<String>,
@@ -22,7 +31,17 @@ fn build_event(
     // 8000 chars (~2000 tokens) covers most a11y dumps (Teams ~20K chars is
     // still truncated but the compose box / visible chat fits). 800 was too
     // tight — only captured app chrome/toolbar, missing actual content.
-    let screen_text_excerpt = last_screen_text.chars().take(8000).collect::<String>();
+    let total_chars = last_screen_text.chars().count();
+    let screen_text_excerpt = last_screen_text
+        .chars()
+        .take(SCREEN_TEXT_MAX_CHARS)
+        .collect::<String>();
+    if total_chars > SCREEN_TEXT_MAX_CHARS {
+        tracing::debug!(
+            "screen_text truncated: {}/{} chars kept (app={:?})",
+            SCREEN_TEXT_MAX_CHARS, total_chars, current_app
+        );
+    }
 
     let mic_text_recent = if recent_transcripts.is_empty() {
         None
@@ -102,6 +121,12 @@ pub async fn run(
                             if let Some(ref old_app) = current_app {
                                 let elapsed = app_started_at.elapsed().as_secs();
                                 app_history.push_back((old_app.clone(), elapsed, app_started_at));
+                                // Hard cap so the deque can't grow unbounded
+                                // over long sessions even though build_event
+                                // filters by the 30-min window.
+                                while app_history.len() > APP_HISTORY_MAX {
+                                    app_history.pop_front();
+                                }
                             }
                             current_app = new_app;
                             app_started_at = Instant::now();
@@ -196,6 +221,7 @@ mod tests {
             log_level: "info".into(),
             a11y_script: std::path::PathBuf::from("a11y.py"),
             backend: BackendKind::Text,
+            vision_sharp_apps: crate::config_file::default_sharp_apps(),
         })
     }
 
@@ -222,6 +248,25 @@ mod tests {
         );
         assert_eq!(ev.window_title.as_deref(), Some("Doc.md — VSCode"));
         assert_eq!(ev.app.as_deref(), Some("vscode"));
+    }
+
+    #[test]
+    fn build_event_truncates_huge_screen_text() {
+        let big = "a".repeat(SCREEN_TEXT_MAX_CHARS * 3);
+        let ev = build_event(
+            &Some("app".into()),
+            &None,
+            &big,
+            &VecDeque::new(),
+            &Instant::now(),
+            &VecDeque::new(),
+            false,
+        );
+        assert_eq!(
+            ev.screen_text_excerpt.chars().count(),
+            SCREEN_TEXT_MAX_CHARS,
+            "huge input must be truncated to the cap"
+        );
     }
 
     #[test]

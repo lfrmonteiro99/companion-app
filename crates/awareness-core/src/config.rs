@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 
 use crate::backend::BackendKind;
-use crate::config_file::{default_frustration_keywords, ConfigFile};
+use crate::config_file::{default_frustration_keywords, default_sharp_apps, ConfigFile};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -35,22 +35,34 @@ pub struct Config {
     pub log_level: String,
     pub a11y_script: PathBuf,
     pub backend: BackendKind,
+    /// Substrings (case-insensitive) of `app` names that upgrade the vision
+    /// backend to its "sharp" (higher-detail) tier.
+    pub vision_sharp_apps: Vec<String>,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct RunArgs {
+    /// Directory where runs.jsonl, ratings.jsonl, run.log and budget state
+    /// are written. Created if missing. Default: data/phase_poc.
     #[arg(long)]
     pub output_dir: Option<PathBuf>,
+    /// Path to the ggml Whisper model (only required under --features full).
     #[arg(long)]
     pub whisper_model: Option<PathBuf>,
+    /// Daily spending cap in USD. The run exits with code 2 once exceeded.
     #[arg(long)]
     pub budget: Option<f64>,
+    /// Seconds between screenshot captures. Lower = more responsive, more CPU.
     #[arg(long)]
     pub tick_screen_seconds: Option<u64>,
+    /// Seconds between periodic gate/API evaluations. Should be >= tick_screen_seconds.
     #[arg(long)]
     pub tick_analysis_seconds: Option<u64>,
+    /// Log filter (tracing EnvFilter syntax). E.g. `info`, `debug`,
+    /// `awareness_cli=debug,info`. Overridden by RUST_LOG if set.
     #[arg(long)]
     pub log_level: Option<String>,
+    /// Interval between the periodic "nudge" gate trigger, in minutes.
     #[arg(long)]
     pub gate_periodic_check_minutes: Option<u64>,
     /// Min. new-word count (vs last sent text) to trigger a "text_changed"
@@ -177,6 +189,15 @@ impl Config {
             .clone()
             .unwrap_or_else(default_frustration_keywords);
 
+        let vision_sharp_apps = toml_cfg
+            .vision
+            .sharp_apps
+            .clone()
+            .unwrap_or_else(default_sharp_apps)
+            .into_iter()
+            .map(|s| s.to_lowercase())
+            .collect();
+
         let min_send_interval_seconds = toml_cfg
             .runtime
             .min_send_interval_seconds
@@ -233,6 +254,7 @@ impl Config {
             log_level,
             a11y_script,
             backend,
+            vision_sharp_apps,
         };
 
         cfg.validate()?;
@@ -282,6 +304,21 @@ impl Config {
         if !(0.0..=1.0).contains(&self.text_dedup_similarity) {
             anyhow::bail!("text_dedup_similarity must be in [0, 1]");
         }
+        if self.gate_app_time_threshold_minutes == 0 {
+            anyhow::bail!("gate_app_time_threshold_minutes must be >= 1");
+        }
+        if self.gate_periodic_check_minutes == 0 {
+            anyhow::bail!("gate_periodic_check_minutes must be >= 1");
+        }
+        // EnvFilter parses "info", "debug", "trace" etc. Validate so users get
+        // an error at startup rather than a silent fallback to the default
+        // directive when they typo "dubug".
+        if let Err(e) = tracing_subscriber::EnvFilter::try_new(&self.log_level) {
+            anyhow::bail!(
+                "invalid log_level {:?}: {e}. Examples: info, debug, awareness_cli=debug",
+                self.log_level
+            );
+        }
         Ok(())
     }
 
@@ -318,6 +355,7 @@ impl Config {
             log_level: "info".into(),
             a11y_script: PathBuf::new(),
             backend: BackendKind::Text,
+            vision_sharp_apps: crate::config_file::default_sharp_apps(),
         }
     }
 }
@@ -358,6 +396,10 @@ mod tests {
             log_level: "info".into(),
             a11y_script: PathBuf::from("../../scripts/a11y_dump.py"),
             backend: BackendKind::Text,
+            vision_sharp_apps: crate::config_file::default_sharp_apps()
+                .into_iter()
+                .map(|s| s.to_lowercase())
+                .collect(),
         }
     }
 

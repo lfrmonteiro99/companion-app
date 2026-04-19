@@ -90,8 +90,13 @@ async fn run(args: RunArgs) -> Result<()> {
         .open(&log_path)?;
     let (file_writer, _log_guard) = tracing_appender::non_blocking(log_file);
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&cfg.log_level));
+    // Prefer RUST_LOG if it's set (standard tracing override); fall back to
+    // the validated cfg.log_level. Log which source won so debugging filter
+    // surprises doesn't require reading source.
+    let (filter, filter_source) = match EnvFilter::try_from_default_env() {
+        Ok(f) => (f, "RUST_LOG"),
+        Err(_) => (EnvFilter::new(&cfg.log_level), "cfg.log_level"),
+    };
 
     tracing_subscriber::registry()
         .with(filter)
@@ -100,10 +105,11 @@ async fn run(args: RunArgs) -> Result<()> {
         .init();
 
     tracing::info!(
-        "awareness-cli starting — budget ${:.2}/day, output {:?}, log {:?}",
+        "awareness-cli starting — budget ${:.2}/day, output {:?}, log {:?}, log_filter_source={}",
         cfg.budget_usd_daily,
         cfg.output_dir,
         log_path,
+        filter_source,
     );
     tracing::info!(
         "features: full={}",
@@ -368,6 +374,10 @@ async fn run(args: RunArgs) -> Result<()> {
                                             // returns empty and we forced the alert, fall back
                                             // to a minimal description derived from local state.
                                             if resp.should_alert && resp.quick_message.trim().is_empty() {
+                                                tracing::warn!(
+                                                    "tick={tick_id} model returned empty quick_message; using local fallback (reason={})",
+                                                    decision.reason
+                                                );
                                                 resp.quick_message = format!(
                                                     "Sinal local ({}) em app {}.",
                                                     decision.reason,

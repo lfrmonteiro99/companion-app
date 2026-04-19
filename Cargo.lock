@@ -419,6 +419,7 @@ dependencies = [
  "tokio-test",
  "toml",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

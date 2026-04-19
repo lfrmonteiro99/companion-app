@@ -1,6 +1,6 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use crate::aggregator::ContextEvent;
+use crate::types::ContextEvent;
 use crate::config::Config;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

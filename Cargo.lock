@@ -392,6 +392,7 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "dotenvy",
  "pretty_assertions",
  "reqwest",
  "serde",

@@ -2,10 +2,8 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use crate::aggregator::ContextEvent;
+use crate::types::{ContextEvent, FilterResponse};
 use crate::config::Config;
-
-pub use awareness_core::types::FilterResponse;
 
 // ── Internal request / response structs ──────────────────────────────────────
 

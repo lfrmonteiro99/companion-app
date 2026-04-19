@@ -5,8 +5,7 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
-use crate::aggregator::ContextEvent;
-use crate::api::FilterResponse;
+use awareness_core::types::{ContextEvent, FilterResponse};
 use crate::gate::GateDecision;
 use crate::tts::{self, TtsConfig};
 

@@ -36,7 +36,7 @@ default = []
 portal = ["dep:ashpd", "dep:pipewire"]
 ocr    = ["dep:leptess"]
 audio  = ["dep:cpal", "dep:webrtc-vad", "dep:whisper-rs"]
-full   = ["portal", "ocr", "audio"]
+full   = ["portal", "ocr", "audio", "awareness-core/full"]
 
 [dependencies.leptess]
 version = "0.14"

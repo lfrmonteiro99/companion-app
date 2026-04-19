@@ -15,6 +15,14 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 toml = "0.8"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
+dotenvy = "0.15"
+
+[features]
+default = []
+# Opt-in flag set by front-ends that bundle the audio/STT pipeline
+# (whisper model required). Currently used only to gate the whisper
+# model existence check in `Config::validate`.
+full = []
 
 [dev-dependencies]
 pretty_assertions = "1"

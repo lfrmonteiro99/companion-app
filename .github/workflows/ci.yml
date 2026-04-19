@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt + clippy + test (default features)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/awareness-cli
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/awareness-cli/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('crates/awareness-cli/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # `cargo fmt --check` is deliberately NOT enforced: the repo was not
+      # fmt-clean when CI was introduced, and a blanket reformat is out of
+      # scope for the PR that added this workflow. Add `cargo fmt --all`
+      # + this step together when you're ready to lock it in.
+
+      - name: cargo clippy (lib + tests + bin, deny warnings)
+        run: cargo clippy --lib --tests --bins -- -D warnings
+
+      - name: cargo test
+        run: cargo test --lib

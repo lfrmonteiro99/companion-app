@@ -49,7 +49,7 @@ pub async fn spawn_mic_capture(
                 tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
             }
         });
-        return Ok(handle);
+        Ok(handle)
     }
 }
 

@@ -58,6 +58,9 @@ dependencies {
     // On-device OCR for captured screens
     implementation("com.google.mlkit:text-recognition:16.0.1")
 
+    // EncryptedSharedPreferences for the OpenAI key at rest
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
     // Kotlin coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }

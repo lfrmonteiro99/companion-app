@@ -94,7 +94,10 @@ class AudioCapture(private val ctx: Context) {
                 RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
                 1500,
             )
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500)
+            // 500 ms so short utterances ("OK" / "yes" / "lembra-me")
+            // still finalise. 1500 was dropping everything shorter than
+            // a full sentence, which explained the empty MIC trace.
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 500)
             if (Build.VERSION.SDK_INT >= 33) {
                 putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             }
@@ -162,7 +165,14 @@ class AudioCapture(private val ctx: Context) {
         override fun onPartialResults(partialResults: Bundle?) {
             val list = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val best = list?.firstOrNull()?.takeIf { it.isNotBlank() }
-            if (best != null) lastPartial = best
+            if (best != null && best != lastPartial) {
+                lastPartial = best
+                // Breadcrumb so the user sees partials arriving even
+                // before an utterance is finalised. Otherwise the trace
+                // looks like "listening, listening, listening" with no
+                // evidence the mic is picking up anything.
+                TraceLog.micStatus("partial: ${best.take(80)}")
+            }
         }
 
         override fun onError(error: Int) {

@@ -252,7 +252,10 @@ pub enum VisionTier {
 impl VisionTier {
     fn model(self) -> &'static str {
         match self {
-            VisionTier::Fast => "gpt-4o-mini",
+            // 4.1-mini follows multi-clause system prompts better than
+            // 4o-mini and supports vision. 4o stays the sharp tier —
+            // it's still the best at reading dense UI text.
+            VisionTier::Fast => "gpt-4.1-mini",
             VisionTier::Sharp => "gpt-4o",
         }
     }

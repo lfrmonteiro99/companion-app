@@ -98,6 +98,18 @@ Terminal com erro:
 BOM: "`npm install` falhou com EACCES em /usr/local/lib/node_modules. Evita sudo — usa nvm ou muda prefix: `npm config set prefix ~/.npm-global`."
 MAU: "Terminal mostra erro de permissões."
 
+Email com lista de ofertas de trabalho (Remote Rocketship, Otta, Gun.io, LinkedIn newsletter):
+BOM: "Remote Rocketship: 'Senior Rust Engineer @ Figma — remoto EU — $180-220k'. Combina com o teu stack (Rust + distributed). Pensa: candidata hoje, ligação com o recruiter via LinkedIn nas próximas 48h."
+MAU: "Email com lista de empregos remotos."
+
+Post no Instagram com dev-tip:
+BOM: "Abhijit no IG: 'adiciona ao .md — Codex will review your output once you are done'. 100x é marketing, mas cross-model review é prática real (tens subagent code-reviewer). Pensa: testa num commit pequeno antes de meter no fluxo."
+MAU: "Post do Instagram sobre uso do Claude Code."
+
+LinkedIn com anúncio de nova posição pública:
+BOM: "João Silva anunciou Head of Platform @ Empresa X. Ele era CTO da antiga start-up do Y. Pensa: congratular hoje + pedir 30 min próxima semana — é contacto directo para roles remotos."
+MAU: "Um contacto mudou de emprego no LinkedIn."
+
 REGRAS PARA should_alert
 
 Postura default: **se consegues dizer algo concreto e útil sobre o que está no ecrã, alerta**. O utilizador ligou a app para ouvir a tua opinião — não para te ver calado à espera de casos perfeitos. Silêncio (should_alert=false) é a excepção, não o default, e aplica-se só nos casos listados mais abaixo.
@@ -252,7 +264,12 @@ impl OpenAiClient {
         };
 
         let body = ChatRequest {
-            model: "gpt-4o-mini".to_string(),
+            // gpt-4o-mini was silently dropping alerts even after
+            // recognising actionable content ("visualizar lista de
+            // empregos remotos"). gpt-4.1-mini follows longer system
+            // prompts with competing clauses much better — the
+            // "postura default: alerta" instruction actually takes.
+            model: "gpt-4.1-mini".to_string(),
             messages: vec![
                 ChatMessage {
                     role: "system".to_string(),
@@ -264,7 +281,10 @@ impl OpenAiClient {
                 },
             ],
             temperature: 0.3,
-            max_tokens: 280,
+            // 500 so reply-suggestion messages for emails/chats have
+            // room for both citation + reply draft. 280 was clipping
+            // the useful part.
+            max_tokens: 500,
             response_format: ResponseFormat {
                 r#type: "json_object".to_string(),
             },

@@ -60,6 +60,9 @@ class AwarenessService : Service() {
         startForegroundWithType()
         ensureAlertChannel()
         acquireWakeLockBestEffort()
+        // Watchdog registers "user expects capture" + schedules the
+        // out-of-process check that detects a silent OEM kill.
+        LivenessWatchdog.markCaptureExpected(this, true)
 
         screen = ScreenCapture(
             this,
@@ -141,6 +144,10 @@ class AwarenessService : Service() {
                 ?: screen?.latestText().orEmpty()
             val windowTitle = a11y?.windowTitle
             val micText = audio?.drainTranscript()
+
+            // Fresh heartbeat so the out-of-process watchdog knows we're
+            // still alive. Captures are the natural rhythm of the loop.
+            LivenessWatchdog.recordHeartbeat(this)
 
             TraceLog.captured(
                 tickId,
@@ -286,6 +293,10 @@ class AwarenessService : Service() {
         Tts.shutdown()
         runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
         wakeLock = null
+        // Voluntary shutdown: tell the watchdog to stop expecting a
+        // heartbeat. The worker still runs (periodic), but it'll
+        // immediately short-circuit on expected=false.
+        LivenessWatchdog.markCaptureExpected(this, false)
         super.onDestroy()
     }
 

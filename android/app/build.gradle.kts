@@ -105,4 +105,9 @@ dependencies {
 
     // Kotlin coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // WorkManager — resilient to process kills (the OS restarts the worker
+    // after Samsung / Doze terminates our foreground service). Used as the
+    // dead-man's-switch for the capture pipeline.
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 }

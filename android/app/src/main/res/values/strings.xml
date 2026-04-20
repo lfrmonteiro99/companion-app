@@ -6,4 +6,6 @@
     <string name="notification_text">Capturing screen + mic context</string>
     <string name="a11y_description">Lets Awareness read visible text from the focused window so alerts can reference what you are doing. No data is stored by the service — only kept in memory while the app is running.</string>
     <string name="history_title">Alert history</string>
+    <string name="logs_title">Logs</string>
+    <string name="model_io_title">Model I/O</string>
 </resources>

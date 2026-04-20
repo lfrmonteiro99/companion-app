@@ -36,15 +36,26 @@ class AwarenessService : Service() {
     private val alertCounter = AtomicInteger(ALERT_ID_BASE)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        DebugLog.init(this)
+        ModelIoLog.init(this)
+        DebugLog.i(TAG, "onStartCommand")
         startForegroundWithType()
         ensureAlertChannel()
 
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
         val data: Intent? = intent?.getParcelableExtra(EXTRA_DATA)
         if (resultCode != 0 && data != null) {
-            screen = ScreenCapture(this, resultCode, data).also { it.start() }
+            runCatching {
+                screen = ScreenCapture(this, resultCode, data).also { it.start() }
+                DebugLog.i(TAG, "screen capture started")
+            }.onFailure { DebugLog.e(TAG, "screen capture failed to start", it) }
+        } else {
+            DebugLog.w(TAG, "no MediaProjection token; screen capture disabled")
         }
-        audio = AudioCapture(this).also { it.start() }
+        runCatching {
+            audio = AudioCapture(this).also { it.start() }
+            DebugLog.i(TAG, "audio capture started")
+        }.onFailure { DebugLog.e(TAG, "audio capture failed to start", it) }
         if (Settings.ttsEnabled(this)) Tts.ensureStarted(this)
 
         configureCoreFromStoredKey()
@@ -57,10 +68,13 @@ class AwarenessService : Service() {
     private fun configureCoreFromStoredKey() {
         val key = Settings.openAiKey(this)
         if (key.isBlank()) {
-            android.util.Log.w(TAG, "no OpenAI key stored; analyze calls will fail")
+            DebugLog.w(TAG, "no OpenAI key stored; analyze calls will fail")
             return
         }
-        CoreBridge.configure(key, Settings.budgetUsdDaily(this), filesDir.absolutePath)
+        runCatching {
+            CoreBridge.configure(key, Settings.budgetUsdDaily(this), filesDir.absolutePath)
+            DebugLog.i(TAG, "core configured (budget=${Settings.budgetUsdDaily(this)})")
+        }.onFailure { DebugLog.e(TAG, "CoreBridge.configure failed", it) }
     }
 
     private suspend fun runTickLoop() {
@@ -95,11 +109,20 @@ class AwarenessService : Service() {
                 put("mic_text_new", micText != null)
             }.toString()
 
+            val startedAt = System.currentTimeMillis()
             try {
                 val responseJson = CoreBridge.analyze(eventJson)
+                val elapsed = System.currentTimeMillis() - startedAt
+                ModelIoLog.recordSuccess(this, eventJson, responseJson, elapsed)
                 handleResponse(responseJson)
             } catch (t: Throwable) {
-                android.util.Log.e(TAG, "analyze failed", t)
+                val elapsed = System.currentTimeMillis() - startedAt
+                ModelIoLog.recordError(
+                    this, eventJson,
+                    "${t.javaClass.simpleName}: ${t.message ?: "(no message)"}",
+                    elapsed,
+                )
+                DebugLog.e(TAG, "analyze failed", t)
             }
 
             delay(TICK_MS)
@@ -157,6 +180,7 @@ class AwarenessService : Service() {
     }
 
     override fun onDestroy() {
+        DebugLog.i(TAG, "onDestroy")
         loopJob?.cancel()
         scope.cancel()
         screen?.stop()

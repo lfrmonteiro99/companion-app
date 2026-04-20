@@ -30,6 +30,8 @@ import androidx.compose.ui.unit.dp
 
 class MainActivity : ComponentActivity() {
 
+    private val TAG = "MainActivity"
+
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -44,7 +46,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        CoreBridge.init()
+        DebugLog.init(this)
+        DebugLog.installCrashHandler(this)
+        ModelIoLog.init(this)
+        runCatching {
+            CoreBridge.init()
+            DebugLog.i(TAG, "core init ok")
+        }.onFailure { DebugLog.e(TAG, "CoreBridge.init failed", it) }
 
         setContent {
             MaterialTheme {
@@ -128,6 +136,16 @@ class MainActivity : ComponentActivity() {
                             startActivity(Intent(this@MainActivity, HistoryActivity::class.java))
                         }) {
                             Text("View alert history")
+                        }
+                        Button(onClick = {
+                            startActivity(Intent(this@MainActivity, LogsActivity::class.java))
+                        }) {
+                            Text("View logs")
+                        }
+                        Button(onClick = {
+                            startActivity(Intent(this@MainActivity, ModelIoActivity::class.java))
+                        }) {
+                            Text("View model I/O")
                         }
                     }
                 }

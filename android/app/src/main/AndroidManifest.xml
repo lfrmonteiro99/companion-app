@@ -39,6 +39,18 @@
             android:label="@string/history_title"
             android:parentActivityName=".MainActivity" />
 
+        <activity
+            android:name=".LogsActivity"
+            android:exported="false"
+            android:label="@string/logs_title"
+            android:parentActivityName=".MainActivity" />
+
+        <activity
+            android:name=".ModelIoActivity"
+            android:exported="false"
+            android:label="@string/model_io_title"
+            android:parentActivityName=".MainActivity" />
+
         <service
             android:name=".AwarenessService"
             android:foregroundServiceType="mediaProjection|microphone"

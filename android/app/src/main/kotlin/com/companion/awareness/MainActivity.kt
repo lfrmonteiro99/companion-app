@@ -118,6 +118,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startCaptureFlow() {
+        // Fast path: accessibility service already enabled → start the
+        // service directly, no MediaProjection consent dialog, no
+        // shutter sound, no keyguard-kill risk. This is the preferred
+        // mode; MediaProjection is only needed for canvas/game apps
+        // where the a11y tree has no text.
+        if (AwarenessAccessibilityService.isConnected()) {
+            AppLog.i(TAG, "a11y connected → starting service in a11y-only mode")
+            AwarenessService.startWithoutProjection(this)
+            status.value = "capturing (accessibility)"
+            return
+        }
+
         if (hasAllRuntimePermissions()) {
             AppLog.i(TAG, "permissions already granted → requesting screen access")
             val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -180,13 +192,17 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         Text(
-                            "Accessibility: " + if (a11yEnabled) "on (cleaner text)" else "off (using OCR)",
+                            if (a11yEnabled) {
+                                "Accessibility: on — capture survives background and lock screen"
+                            } else {
+                                "Accessibility: OFF — REQUIRED so the OS doesn't kill capture. Tap below to enable."
+                            },
                         )
                         if (!a11yEnabled) {
                             Button(onClick = {
                                 startActivity(Intent(SystemSettings.ACTION_ACCESSIBILITY_SETTINGS))
                             }) {
-                                Text("Enable accessibility")
+                                Text("Enable accessibility (required)")
                             }
                         }
                         var batteryOptimized by remember {

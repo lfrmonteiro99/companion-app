@@ -8,6 +8,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Used when the accessibility service is the primary observation
+         channel (no MediaProjection, no mic). Keeps the foreground
+         service legal under Android 14's fgServiceType enforcement. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- Partial wake lock while the capture service is running — stops
          Samsung / Doze from pausing the MediaProjection when the screen
          locks or the app goes background. Costs battery; expected for a
@@ -63,8 +67,17 @@
 
         <service
             android:name=".AwarenessService"
-            android:foregroundServiceType="mediaProjection|microphone"
-            android:exported="false" />
+            android:foregroundServiceType="mediaProjection|microphone|specialUse"
+            android:exported="false">
+            <!-- Purpose declaration for the specialUse fg-type: our
+                 capture pipeline is anchored to AwarenessAccessibility-
+                 Service as the observation channel and needs a long-
+                 running foreground lifetime even when MediaProjection
+                 isn't active. -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Ongoing screen content observation via the bundled accessibility service" />
+        </service>
 
         <!--
           Optional accessibility service. The user must enable it in

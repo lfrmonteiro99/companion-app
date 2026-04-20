@@ -1,9 +1,16 @@
 package com.companion.awareness
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityService.ScreenshotResult
+import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
+import android.graphics.Bitmap
+import android.hardware.HardwareBuffer
+import android.os.Build
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Optional accessibility service — when the user enables it in system
@@ -61,12 +68,57 @@ class AwarenessAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         connected = true
+        instance.set(this)
     }
 
     override fun onDestroy() {
         connected = false
+        instance.compareAndSet(this, null)
         latest.set(null)
         super.onDestroy()
+    }
+
+    /**
+     * Take a bitmap of the default display via the accessibility API.
+     * Used when the a11y tree text is too thin to feed the model (canvas
+     * apps, games, some video players) but we still want pixels for OCR
+     * or vision. Rate-limited by Android to ~3 fps — faster calls return
+     * `ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT` and we just skip.
+     */
+    private fun captureScreenshotInto(sink: AtomicReference<Bitmap?>) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        if (!screenshotBusy.compareAndSet(false, true)) return
+        try {
+            takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                mainExecutor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(result: ScreenshotResult) {
+                        try {
+                            val buffer: HardwareBuffer = result.hardwareBuffer
+                            val cs = result.colorSpace
+                            val bmp = Bitmap.wrapHardwareBuffer(buffer, cs)
+                            if (bmp != null) {
+                                // Copy to a CPU-backed bitmap so ML Kit / image
+                                // pipeline can read it. HardwareBuffer bitmaps
+                                // can't be `getPixels()`.
+                                val cpu = bmp.copy(Bitmap.Config.ARGB_8888, false)
+                                sink.set(cpu)
+                            }
+                            buffer.close()
+                        } finally {
+                            screenshotBusy.set(false)
+                        }
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        screenshotBusy.set(false)
+                    }
+                },
+            )
+        } catch (t: Throwable) {
+            screenshotBusy.set(false)
+        }
     }
 
     data class Snapshot(
@@ -79,10 +131,25 @@ class AwarenessAccessibilityService : AccessibilityService() {
         private const val MAX_DEPTH = 40
         @Volatile private var connected = false
         private val latest = AtomicReference<Snapshot?>(null)
+        private val instance = AtomicReference<AwarenessAccessibilityService?>(null)
+        private val screenshotBusy = AtomicBoolean(false)
+        private val latestBitmap = AtomicReference<Bitmap?>(null)
 
         fun isConnected(): Boolean = connected
 
         /** Returns the most recent snapshot, or null if the service is off. */
         fun latest(): Snapshot? = latest.get()
+
+        /**
+         * Ask the live service (if bound) to refresh the screenshot sink.
+         * Returns the *previous* bitmap (whatever was captured last) — the
+         * new one lands asynchronously into `latestBitmap` via the
+         * callback. Callers should tolerate up to ~333 ms of staleness.
+         */
+        fun requestScreenshot(): Bitmap? {
+            val svc = instance.get() ?: return latestBitmap.get()
+            svc.captureScreenshotInto(latestBitmap)
+            return latestBitmap.get()
+        }
     }
 }

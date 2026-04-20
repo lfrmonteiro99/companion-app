@@ -41,30 +41,31 @@ class AwarenessService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
         val data: Intent? = intent?.getParcelableExtra(EXTRA_DATA)
+        val useProjection = resultCode != 0 && data != null
+        val a11yConnected = AwarenessAccessibilityService.isConnected()
 
-        // Android re-starts foreground services after the process dies.
-        // That restart does NOT carry the MediaProjection token back — the
-        // appop `android:project_media` is granted only while the user's
-        // active consent is live, and expires when the process exits. If
-        // we try to startForeground with FOREGROUND_SERVICE_TYPE_MEDIA_-
-        // PROJECTION without that appop, Android 14 throws SecurityException
-        // and the service crash-loops. Bail cleanly so the user has to
-        // press Start again (we also return START_NOT_STICKY below so the
-        // restart never happens in the first place).
-        if (resultCode == 0 || data == null) {
-            AppLog.w(TAG, "onStartCommand without MediaProjection token (likely a restart); stopping")
+        // If we have neither a fresh MediaProjection token nor a bound
+        // accessibility service, we have no way to observe the screen.
+        // This covers the Android-initiated fg-service restart case,
+        // where all extras are lost — bail cleanly; the user's Start
+        // button is the only legitimate entry point.
+        if (!useProjection && !a11yConnected) {
+            AppLog.w(
+                TAG,
+                "onStartCommand without MediaProjection token AND a11y off — stopping",
+            )
             stopSelf(startId)
             return START_NOT_STICKY
         }
 
-        startForegroundWithType()
+        startForegroundWithType(useProjection)
         ensureAlertChannel()
         acquireWakeLockBestEffort()
         // Watchdog registers "user expects capture" + schedules the
         // out-of-process check that detects a silent OEM kill.
         LivenessWatchdog.markCaptureExpected(this, true)
 
-        screen = ScreenCapture(
+        if (useProjection) screen = ScreenCapture(
             this,
             resultCode,
             data,
@@ -331,7 +332,7 @@ class AwarenessService : Service() {
             android.Manifest.permission.RECORD_AUDIO,
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
-    private fun startForegroundWithType() {
+    private fun startForegroundWithType(useProjection: Boolean) {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             nm.createNotificationChannel(
@@ -350,17 +351,30 @@ class AwarenessService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Android 14+ rejects fgServiceType=microphone if RECORD_AUDIO
-            // isn't granted yet — SecurityException kills the process with
-            // "Awareness keeps stopping". Compose the type mask dynamically
-            // so the service starts in media-projection-only mode when the
-            // user declines mic access; audio capture gracefully no-ops.
-            var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            // Compose the fgServiceType mask dynamically. Android 14
+            // rejects a type for which we don't hold the backing
+            // permission/token at startForeground() time, killing the
+            // process with SecurityException.
+            //   - MEDIA_PROJECTION: only when we have a live token.
+            //   - MICROPHONE: only when RECORD_AUDIO is granted.
+            //   - SPECIAL_USE: always available — this is the anchor
+            //     when a11y is the primary observation channel and
+            //     MediaProjection is off.
+            var type = 0
+            if (useProjection) {
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            } else {
+                // A11y-only mode. Anchor the fg-service with SPECIAL_USE
+                // (subtype declared in the manifest <property>) so the
+                // service has a legal type even when projection is off.
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            }
             if (hasMicPermission()) {
                 type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             } else {
                 AppLog.w(TAG, "RECORD_AUDIO not granted — starting without mic fgServiceType")
             }
+            AppLog.i(TAG, "fgServiceType mask=0x${type.toString(16)} useProjection=$useProjection")
             startForeground(NOTIF_ID, notif, type)
         } else {
             startForeground(NOTIF_ID, notif)
@@ -400,6 +414,18 @@ class AwarenessService : Service() {
             val i = Intent(ctx, AwarenessService::class.java)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
                 .putExtra(EXTRA_DATA, data)
+            ctx.startForegroundService(i)
+        }
+
+        /**
+         * Start the service in a11y-only mode: no MediaProjection token,
+         * no shutter-sound screen capture, no keyguard-kill. Preferred
+         * path when AwarenessAccessibilityService is connected — Samsung
+         * rarely kills a11y-bound processes, so the service stays alive
+         * in background indefinitely.
+         */
+        fun startWithoutProjection(ctx: Context) {
+            val i = Intent(ctx, AwarenessService::class.java)
             ctx.startForegroundService(i)
         }
 

@@ -3,6 +3,12 @@
   Capability + event declaration for AwarenessAccessibilityService.
   The user is shown a system dialog listing these capabilities before
   enabling the service.
+
+  `canTakeScreenshot=true` lets the service pull a bitmap of the
+  focused window when the a11y tree is too thin (games, canvas-rendered
+  UI). ~3 fps limit enforced by Android (333 ms between calls). Gives
+  us the MediaProjection fallback without MediaProjection's process-
+  kill lifecycle.
 -->
 <accessibility-service
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -11,4 +17,5 @@
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagDefault|flagReportViewIds|flagRetrieveInteractiveWindows"
     android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
     android:notificationTimeout="400" />

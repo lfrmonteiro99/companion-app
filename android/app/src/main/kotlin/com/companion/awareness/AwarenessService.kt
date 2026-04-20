@@ -157,6 +157,12 @@ class AwarenessService : Service() {
                 micText != null,
                 screenText.replace('\n', ' '),
             )
+            // Separate trace entry when the mic delivered something —
+            // otherwise you only see mic=true/false on the capture row
+            // without the actual words.
+            if (!micText.isNullOrBlank()) {
+                TraceLog.micHeard(tickId, micText)
+            }
 
             // Self-observation guard. The OCR pass sometimes captures
             // the notification shade or our own LogsActivity, so the text

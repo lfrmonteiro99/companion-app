@@ -67,12 +67,7 @@ class MainActivity : ComponentActivity() {
     ) { grants ->
         val granted = grants.entries.joinToString(",") { "${it.key.substringAfterLast('.')}=${it.value}" }
         AppLog.i(TAG, "runtime permissions result: $granted")
-        // Regardless of which permissions the user granted, proceed to the
-        // MediaProjection prompt. The service adapts its fgServiceType and
-        // AudioCapture is a no-op when RECORD_AUDIO is denied.
-        val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        status.value = "requesting screen access…"
-        projectionLauncher.launch(mpm.createScreenCaptureIntent())
+        dispatchPostPermissions()
     }
 
     private fun requiredRuntimePermissions(): Array<String> {
@@ -118,27 +113,34 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startCaptureFlow() {
-        // Fast path: accessibility service already enabled → start the
-        // service directly, no MediaProjection consent dialog, no
-        // shutter sound, no keyguard-kill risk. This is the preferred
-        // mode; MediaProjection is only needed for canvas/game apps
-        // where the a11y tree has no text.
-        if (AwarenessAccessibilityService.isConnected()) {
-            AppLog.i(TAG, "a11y connected → starting service in a11y-only mode")
-            AwarenessService.startWithoutProjection(this)
-            status.value = "capturing (accessibility)"
-            return
-        }
-
-        if (hasAllRuntimePermissions()) {
-            AppLog.i(TAG, "permissions already granted → requesting screen access")
-            val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            status.value = "requesting screen access…"
-            projectionLauncher.launch(mpm.createScreenCaptureIntent())
-        } else {
+        // Always gate on runtime permissions first — even in a11y-only
+        // mode we still want RECORD_AUDIO (so SpeechRecognizer can
+        // feed mic_text_recent into the gate's voice_activity /
+        // emotional rules) and POST_NOTIFICATIONS (so alerts actually
+        // show). The callback picks the right start method afterwards.
+        if (!hasAllRuntimePermissions()) {
             AppLog.i(TAG, "missing runtime permissions → prompting")
             status.value = "requesting permissions…"
             runtimePermissionsLauncher.launch(requiredRuntimePermissions())
+            return
+        }
+        dispatchPostPermissions()
+    }
+
+    private fun dispatchPostPermissions() {
+        // Preferred path: accessibility service already enabled → start
+        // the service directly, no MediaProjection consent dialog, no
+        // shutter sound, no keyguard-kill risk. Fallback: legacy
+        // MediaProjection flow for users who didn't enable a11y.
+        if (AwarenessAccessibilityService.isConnected()) {
+            AppLog.i(TAG, "a11y connected + permissions ok → a11y-only start")
+            AwarenessService.startWithoutProjection(this)
+            status.value = "capturing (accessibility)"
+        } else {
+            AppLog.i(TAG, "a11y not connected → requesting MediaProjection")
+            val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            status.value = "requesting screen access…"
+            projectionLauncher.launch(mpm.createScreenCaptureIntent())
         }
     }
 

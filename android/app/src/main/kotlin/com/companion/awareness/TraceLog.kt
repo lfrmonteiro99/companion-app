@@ -23,7 +23,7 @@ object TraceLog {
 
     private val appContext = AtomicReference<Context?>(null)
 
-    enum class Stage { CAPTURE, GATE_SKIP, GATE_SEND, API_RESP, BUDGET, NOTIFY_POST, NOTIFY_SUPPRESS, ANALYZE_FAIL }
+    enum class Stage { CAPTURE, MIC, GATE_SKIP, GATE_SEND, API_RESP, BUDGET, NOTIFY_POST, NOTIFY_SUPPRESS, ANALYZE_FAIL }
 
     data class Entry(
         val timestamp: String,
@@ -36,6 +36,9 @@ object TraceLog {
 
     fun captured(tickId: Long, app: String?, chars: Int, hasMic: Boolean, preview: String) =
         write(tickId, Stage.CAPTURE, "app=${app ?: "?"} chars=$chars mic=$hasMic preview=${preview.take(60)}")
+
+    fun micHeard(tickId: Long, transcript: String) =
+        write(tickId, Stage.MIC, "heard: ${transcript.take(200)}")
 
     fun gateSkip(tickId: Long, reason: String) =
         write(tickId, Stage.GATE_SKIP, "gate=Skip reason=$reason · NOT sending to OpenAI")

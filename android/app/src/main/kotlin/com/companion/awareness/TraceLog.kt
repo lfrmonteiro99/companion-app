@@ -40,6 +40,14 @@ object TraceLog {
     fun micHeard(tickId: Long, transcript: String) =
         write(tickId, Stage.MIC, "heard: ${transcript.take(200)}")
 
+    /**
+     * Mic status transitions (listening, backing off, errors) — no
+     * tick id because they fire between ticks, and they're useful for
+     * diagnosing "the mic isn't hearing me" without a bug report.
+     */
+    fun micStatus(message: String) =
+        write(0L, Stage.MIC, "status: $message")
+
     fun gateSkip(tickId: Long, reason: String) =
         write(tickId, Stage.GATE_SKIP, "gate=Skip reason=$reason · NOT sending to OpenAI")
 

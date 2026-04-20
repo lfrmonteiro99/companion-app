@@ -38,6 +38,10 @@ class AudioCapture(private val ctx: Context) {
     private var recognizer: SpeechRecognizer? = null
     private val queue = ConcurrentLinkedQueue<String>()
     @Volatile private var running = false
+    // Last partial from the in-flight utterance. Committed to the queue
+    // if the recognizer errors out or ends silence before finalising — on
+    // Samsung the final onResults sometimes just never arrives.
+    @Volatile private var lastPartial: String? = null
 
     fun start() {
         val granted = ContextCompat.checkSelfPermission(
@@ -81,29 +85,66 @@ class AudioCapture(private val ctx: Context) {
                 RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
             )
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
-            // Partial results so we don't lose long utterances if the
-            // final callback arrives late.
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            // Let the recognizer wait longer before calling an utterance
+            // finished. Samsung's default (~500 ms complete-silence) cuts
+            // off natural pauses; 2 s gives sentences room to breathe.
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000)
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                1500,
+            )
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500)
             if (Build.VERSION.SDK_INT >= 33) {
                 putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             }
         }
+        lastPartial = null
         try {
             r.startListening(intent)
         } catch (t: Throwable) {
             AppLog.e(TAG, "startListening failed", t)
-            scheduleRestart()
+            scheduleRestart(RESTART_DELAY_MS)
         }
     }
 
-    private fun scheduleRestart() {
+    private fun scheduleRestart(delayMs: Long = RESTART_DELAY_MS) {
         if (!running) return
-        main.postDelayed({ listenOnce() }, RESTART_DELAY_MS)
+        main.postDelayed({ listenOnce() }, delayMs)
+    }
+
+    /** Commit whatever partial we captured so a clipped utterance isn't
+     *  lost when the recognizer returns onError instead of onResults. */
+    private fun commitPartial() {
+        val p = lastPartial?.takeIf { it.isNotBlank() }
+        if (p != null) queue.add(p)
+        lastPartial = null
+    }
+
+    private fun errorName(code: Int): String = when (code) {
+        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "NETWORK_TIMEOUT"
+        SpeechRecognizer.ERROR_NETWORK -> "NETWORK"
+        SpeechRecognizer.ERROR_AUDIO -> "AUDIO"
+        SpeechRecognizer.ERROR_SERVER -> "SERVER"
+        SpeechRecognizer.ERROR_CLIENT -> "CLIENT"
+        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "SPEECH_TIMEOUT"
+        SpeechRecognizer.ERROR_NO_MATCH -> "NO_MATCH"
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "RECOGNIZER_BUSY"
+        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "INSUFFICIENT_PERMISSIONS"
+        SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "TOO_MANY_REQUESTS"
+        SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "SERVER_DISCONNECTED"
+        SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "LANGUAGE_NOT_SUPPORTED"
+        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "LANGUAGE_UNAVAILABLE"
+        else -> "UNKNOWN_$code"
     }
 
     private val listener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
+        override fun onReadyForSpeech(params: Bundle?) {
+            TraceLog.micStatus("listening")
+        }
+        override fun onBeginningOfSpeech() {
+            lastPartial = null
+        }
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
         override fun onEndOfSpeech() {}
@@ -113,22 +154,40 @@ class AudioCapture(private val ctx: Context) {
             val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val best = list?.firstOrNull()?.takeIf { it.isNotBlank() }
             if (best != null) queue.add(best)
+            else commitPartial()
+            lastPartial = null
             scheduleRestart()
         }
 
         override fun onPartialResults(partialResults: Bundle?) {
-            // Intentionally ignore — we only keep finalised utterances
-            // to avoid duplicating text in the tick payload.
+            val list = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            val best = list?.firstOrNull()?.takeIf { it.isNotBlank() }
+            if (best != null) lastPartial = best
         }
 
         override fun onError(error: Int) {
-            when (error) {
+            val name = errorName(error)
+            // Don't lose whatever fragment we had when the recognizer
+            // bails out. Gmail drafts, short commands etc. often land
+            // here on Samsung instead of the proper onResults.
+            commitPartial()
+            val delay: Long = when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH,
                 SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
-                -> { /* common; just restart */ }
-                else -> android.util.Log.d(TAG, "recognizer error=$error")
+                -> RESTART_DELAY_MS // common, silent restart
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
+                SpeechRecognizer.ERROR_TOO_MANY_REQUESTS,
+                -> {
+                    TraceLog.micStatus("$name — backing off 5s")
+                    5_000L
+                }
+                else -> {
+                    TraceLog.micStatus("error $name — restarting")
+                    AppLog.w(TAG, "recognizer error=$name")
+                    1_000L
+                }
             }
-            scheduleRestart()
+            scheduleRestart(delay)
         }
     }
 

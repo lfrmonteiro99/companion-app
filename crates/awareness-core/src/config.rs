@@ -347,7 +347,11 @@ impl Config {
             tick_analysis_seconds: 10,
             whisper_model_path: PathBuf::new(),
             perceptual_hash_threshold: 3,
-            text_dedup_similarity: 0.99,
+            // 0.85 instead of 0.99 so feeds with lots of repeated chrome
+            // (Instagram, Reddit, Twitter) still let new post bodies
+            // through the dedup. Before: likes count changing by 10 was
+            // enough to look like "same content" and drop the frame.
+            text_dedup_similarity: 0.85,
             gate_app_time_threshold_minutes: 25,
             gate_periodic_check_minutes: 2,
             gate_text_new_words_threshold: 5,

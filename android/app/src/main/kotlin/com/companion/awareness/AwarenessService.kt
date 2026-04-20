@@ -141,10 +141,30 @@ class AwarenessService : Service() {
 
             // Prefer accessibility text (cleaner + faster) when the
             // service is enabled; fall back to ML Kit OCR otherwise.
-            val screenText = a11y?.text?.takeIf { it.isNotBlank() }
+            var screenText = a11y?.text?.takeIf { it.isNotBlank() }
                 ?: screen?.latestText().orEmpty()
             val windowTitle = a11y?.windowTitle
             val micText = audio?.drainTranscript()
+
+            // When the a11y tree is thin AND we're in an app known to
+            // hide content behind canvas (Instagram, Reddit, TikTok,
+            // etc.), pull a screenshot through the a11y service and run
+            // ML Kit OCR on it. The a11y service's takeScreenshot API
+            // (~3 fps cap) doesn't need MediaProjection and survives the
+            // screen-lock kill path, so it composes with the a11y-only
+            // start mode.
+            val needsScreenshotOcr = screenText.length < MIN_TEXT_FOR_MODEL &&
+                isCanvasHeavyApp(currentApp)
+            if (needsScreenshotOcr) {
+                val ocrText = screenshotOcr()
+                if (!ocrText.isNullOrBlank() && ocrText.length > screenText.length) {
+                    TraceLog.captured(
+                        tickId, currentApp, ocrText.length, micText != null,
+                        "[a11y-thin, ocr-fallback] " + ocrText.replace('\n', ' '),
+                    )
+                    screenText = ocrText
+                }
+            }
 
             // Fresh heartbeat so the out-of-process watchdog knows we're
             // still alive. Captures are the natural rhythm of the loop.
@@ -264,6 +284,33 @@ class AwarenessService : Service() {
                 quickMessage = body,
             ),
         )
+    }
+
+    /** Ask the accessibility service for a screenshot of the active
+     *  window and run ML Kit text recognition on it. Blocks the coroutine
+     *  until the recognizer finishes (or times out). Returns null when
+     *  the screenshot isn't available yet (~333 ms call rate limit). */
+    private suspend fun screenshotOcr(): String? {
+        val bitmap = AwarenessAccessibilityService.requestScreenshot() ?: return null
+        return try {
+            val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(
+                com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS,
+            )
+            val input = com.google.mlkit.vision.common.InputImage.fromBitmap(bitmap, 0)
+            val deferred = kotlinx.coroutines.CompletableDeferred<String?>()
+            recognizer.process(input)
+                .addOnSuccessListener { deferred.complete(it.text.takeIf { t -> t.isNotBlank() }) }
+                .addOnFailureListener { deferred.complete(null) }
+            kotlinx.coroutines.withTimeoutOrNull(4_000) { deferred.await() }
+        } catch (t: Throwable) {
+            AppLog.w(TAG, "screenshot OCR failed", t)
+            null
+        }
+    }
+
+    private fun isCanvasHeavyApp(pkg: String?): Boolean {
+        pkg ?: return false
+        return pkg in canvasHeavyApps
     }
 
     private fun postAlert(title: String, body: String, urgency: String) {
@@ -411,6 +458,33 @@ class AwarenessService : Service() {
         // during live typing — the draft evolved across five ticks
         // before the model finally alerted.
         private const val TICK_MS = 5_000L
+
+        /** Below this many characters the a11y-extracted text is
+         *  almost certainly just chrome (buttons, usernames, counts)
+         *  and the real content is hidden in canvas. Trigger the
+         *  screenshot+OCR fallback. */
+        private const val MIN_TEXT_FOR_MODEL = 300
+
+        /** Apps whose main content is drawn in canvas / Skia rather
+         *  than native Views, so the a11y tree typically exposes only
+         *  chrome. We always try the screenshot OCR fallback for these
+         *  when the a11y text is below MIN_TEXT_FOR_MODEL. */
+        private val canvasHeavyApps = setOf(
+            "com.instagram.android",
+            "com.instagram.lite",
+            "com.facebook.katana",
+            "com.facebook.lite",
+            "com.twitter.android",
+            "com.zhiliaoapp.musically", // TikTok
+            "com.ss.android.ugc.trill",
+            "com.reddit.frontpage",
+            "com.linkedin.android",
+            "com.pinterest",
+            "com.snapchat.android",
+            "com.whatsapp",
+            "com.whatsapp.w4b",
+            "com.discord",
+        )
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_DATA = "data"
         /** MainActivity reads this from its launching intent and replays

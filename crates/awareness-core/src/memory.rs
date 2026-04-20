@@ -29,6 +29,12 @@ impl MemoryRing {
         }
         self.buf.push_back(e);
     }
+
+    /// Oldest first. Used by the core to apply client-side anti-
+    /// repetition against freshly received quick_messages.
+    pub fn entries(&self) -> impl Iterator<Item = &MemoryEntry> {
+        self.buf.iter()
+    }
     /// Oldest first, newest last. Empty string when ring is empty.
     pub fn to_prompt_lines(&self) -> String {
         self.buf

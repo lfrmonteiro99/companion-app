@@ -80,7 +80,7 @@ impl TextDedup {
     /// Jaccard similarity on character trigrams of two strings.
     ///
     /// Returns 1.0 if both are empty, 0.0 if only one is empty.
-    fn jaccard_trigrams(a: &str, b: &str) -> f32 {
+    pub fn jaccard_trigrams(a: &str, b: &str) -> f32 {
         let trigrams_a: HashSet<&str> = trigrams(a).collect();
         let trigrams_b: HashSet<&str> = trigrams(b).collect();
 

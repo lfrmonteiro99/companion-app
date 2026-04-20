@@ -198,7 +198,8 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
             })
     });
 
-    // 4. Deduct actual cost + push to memory if the model decided to alert.
+    // 4. Deduct actual cost + apply anti-repetition + push to memory.
+    let mut response = response;
     {
         let mut guard = state_slot().lock().unwrap();
         if let Some(state) = guard.as_mut() {
@@ -209,14 +210,39 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
                     over.limit,
                 );
             }
+
+            // Client-side anti-repetition. The prompt asks the model to
+            // stay silent when the history already covers the same
+            // situation, but gpt-4.1-mini sometimes re-alerts with
+            // near-identical text anyway. Compare the proposed
+            // quick_message against every memory entry via the same
+            // Jaccard trigram similarity the desktop pipeline uses for
+            // OCR dedup. ≥0.7 means "same alert, new timestamp" and we
+            // override to should_alert=false so nothing reaches the
+            // user.
             if response.should_alert && response.parse_error.is_none() {
-                state.memory.push(MemoryEntry {
-                    timestamp: event.timestamp,
-                    app: event.app.clone(),
-                    alert_type: response.alert_type.clone(),
-                    should_alert: true,
-                    quick_message: response.quick_message.clone(),
+                let dup = state.memory.entries().any(|e| {
+                    awareness_core::dedup::TextDedup::jaccard_trigrams(
+                        &response.quick_message,
+                        &e.quick_message,
+                    ) >= 0.7
                 });
+                if dup {
+                    log::info!(
+                        "anti-repeat: suppressing duplicate alert ({:?})",
+                        response.quick_message,
+                    );
+                    response.should_alert = false;
+                    response.alert_type = "duplicate".into();
+                } else {
+                    state.memory.push(MemoryEntry {
+                        timestamp: event.timestamp,
+                        app: event.app.clone(),
+                        alert_type: response.alert_type.clone(),
+                        should_alert: true,
+                        quick_message: response.quick_message.clone(),
+                    });
+                }
             }
         }
     }

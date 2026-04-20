@@ -50,7 +50,7 @@ class AwarenessService : Service() {
         if (hasMicPermission()) {
             audio = AudioCapture(this).also { it.start() }
         } else {
-            android.util.Log.i(TAG, "mic disabled — RECORD_AUDIO not granted")
+            AppLog.i(TAG, "mic disabled — RECORD_AUDIO not granted")
         }
         if (Settings.ttsEnabled(this)) Tts.ensureStarted(this)
 
@@ -64,7 +64,7 @@ class AwarenessService : Service() {
     private fun configureCoreFromStoredKey() {
         val key = Settings.openAiKey(this)
         if (key.isBlank()) {
-            android.util.Log.w(TAG, "no OpenAI key stored; analyze calls will fail")
+            AppLog.w(TAG, "no OpenAI key stored; analyze calls will fail")
             return
         }
         CoreBridge.configure(key, Settings.budgetUsdDaily(this), filesDir.absolutePath)
@@ -106,7 +106,7 @@ class AwarenessService : Service() {
                 val responseJson = CoreBridge.analyze(eventJson)
                 handleResponse(responseJson)
             } catch (t: Throwable) {
-                android.util.Log.e(TAG, "analyze failed", t)
+                AppLog.e(TAG, "analyze failed", t)
             }
 
             delay(TICK_MS)
@@ -208,7 +208,7 @@ class AwarenessService : Service() {
             if (hasMicPermission()) {
                 type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             } else {
-                android.util.Log.w(TAG, "RECORD_AUDIO not granted — starting without mic fgServiceType")
+                AppLog.w(TAG, "RECORD_AUDIO not granted — starting without mic fgServiceType")
             }
             startForeground(NOTIF_ID, notif, type)
         } else {

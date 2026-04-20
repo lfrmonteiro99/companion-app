@@ -28,7 +28,7 @@ object Tts {
         tts = TextToSpeech(ctx.applicationContext) { status ->
             val ok = status == TextToSpeech.SUCCESS
             if (!ok) {
-                android.util.Log.w(TAG, "TTS engine init failed: $status")
+                AppLog.w(TAG, "TTS engine init failed: $status")
                 return@TextToSpeech
             }
             val lang = listOf(Locale("pt", "PT"), Locale.getDefault())

@@ -44,11 +44,11 @@ class AudioCapture(private val ctx: Context) {
             ctx, Manifest.permission.RECORD_AUDIO,
         ) == PackageManager.PERMISSION_GRANTED
         if (!granted) {
-            android.util.Log.w(TAG, "RECORD_AUDIO not granted; mic capture disabled")
+            AppLog.w(TAG, "RECORD_AUDIO not granted; mic capture disabled")
             return
         }
         if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
-            android.util.Log.w(TAG, "SpeechRecognizer unavailable on this device")
+            AppLog.w(TAG, "SpeechRecognizer unavailable on this device")
             return
         }
 
@@ -91,7 +91,7 @@ class AudioCapture(private val ctx: Context) {
         try {
             r.startListening(intent)
         } catch (t: Throwable) {
-            android.util.Log.e(TAG, "startListening failed", t)
+            AppLog.e(TAG, "startListening failed", t)
             scheduleRestart()
         }
     }

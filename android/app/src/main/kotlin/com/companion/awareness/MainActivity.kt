@@ -167,6 +167,11 @@ class MainActivity : ComponentActivity() {
                         }) {
                             Text("View alert history")
                         }
+                        Button(onClick = {
+                            startActivity(Intent(this@MainActivity, LogsActivity::class.java))
+                        }) {
+                            Text("View app log")
+                        }
                     }
                 }
             }

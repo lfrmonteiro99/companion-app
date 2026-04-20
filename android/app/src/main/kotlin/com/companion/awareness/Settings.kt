@@ -37,7 +37,7 @@ object Settings {
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )
     } catch (t: Throwable) {
-        android.util.Log.e("Settings", "EncryptedSharedPreferences failed; falling back to plain", t)
+        AppLog.e("Settings", "EncryptedSharedPreferences failed; falling back to plain", t)
         ctx.getSharedPreferences(FILE_PLAIN, Context.MODE_PRIVATE)
     }
 

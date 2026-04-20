@@ -44,7 +44,14 @@ class AwarenessService : Service() {
         if (resultCode != 0 && data != null) {
             screen = ScreenCapture(this, resultCode, data).also { it.start() }
         }
-        audio = AudioCapture(this).also { it.start() }
+        // AudioRecord throws on construction without RECORD_AUDIO; the
+        // service is allowed to start without mic, so skip audio wiring
+        // when the user denied the permission.
+        if (hasMicPermission()) {
+            audio = AudioCapture(this).also { it.start() }
+        } else {
+            android.util.Log.i(TAG, "mic disabled — RECORD_AUDIO not granted")
+        }
         if (Settings.ttsEnabled(this)) Tts.ensureStarted(this)
 
         configureCoreFromStoredKey()
@@ -167,6 +174,12 @@ class AwarenessService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private fun hasMicPermission(): Boolean =
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            this,
+            android.Manifest.permission.RECORD_AUDIO,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
     private fun startForegroundWithType() {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -186,12 +199,18 @@ class AwarenessService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIF_ID,
-                notif,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
-            )
+            // Android 14+ rejects fgServiceType=microphone if RECORD_AUDIO
+            // isn't granted yet — SecurityException kills the process with
+            // "Awareness keeps stopping". Compose the type mask dynamically
+            // so the service starts in media-projection-only mode when the
+            // user declines mic access; audio capture gracefully no-ops.
+            var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            if (hasMicPermission()) {
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            } else {
+                android.util.Log.w(TAG, "RECORD_AUDIO not granted — starting without mic fgServiceType")
+            }
+            startForeground(NOTIF_ID, notif, type)
         } else {
             startForeground(NOTIF_ID, notif)
         }
@@ -215,7 +234,10 @@ class AwarenessService : Service() {
         private const val ALERT_CHANNEL_ID = "awareness_alerts"
         private const val NOTIF_ID = 1
         private const val ALERT_ID_BASE = 100
-        private const val TICK_MS = 30_000L
+        // 10s mirrors the Linux CLI default; the gate's server-side
+        // dedup keeps API cost bounded. 30s made the app feel dead
+        // because the first analysis was half a minute away.
+        private const val TICK_MS = 10_000L
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_DATA = "data"
 

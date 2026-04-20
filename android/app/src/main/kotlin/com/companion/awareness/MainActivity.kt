@@ -2,12 +2,15 @@ package com.companion.awareness
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings as SystemSettings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,9 +41,35 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private val micPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { /* user decides; service will no-op audio if denied */ }
+    // Runtime permissions requested in one batch BEFORE the MediaProjection
+    // dialog. Sequence matters on Android 14+: if we start the foreground
+    // service with foregroundServiceType=microphone while RECORD_AUDIO is
+    // still unapproved, the OS throws SecurityException and the user sees
+    // "Awareness keeps stopping". POST_NOTIFICATIONS is a no-op on <13 and
+    // required on 13+ (otherwise the foreground service notification and
+    // every alert are silently dropped).
+    private val runtimePermissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ ->
+        // Regardless of which permissions the user granted, proceed to the
+        // MediaProjection prompt. The service adapts its fgServiceType and
+        // AudioCapture is a no-op when RECORD_AUDIO is denied.
+        val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        projectionLauncher.launch(mpm.createScreenCaptureIntent())
+    }
+
+    private fun requiredRuntimePermissions(): Array<String> {
+        val perms = mutableListOf(android.Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            perms += android.Manifest.permission.POST_NOTIFICATIONS
+        }
+        return perms.toTypedArray()
+    }
+
+    private fun hasAllRuntimePermissions(): Boolean =
+        requiredRuntimePermissions().all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -110,10 +139,19 @@ class MainActivity : ComponentActivity() {
                             onClick = {
                                 usageGranted = FocusedApp.isGranted(this@MainActivity)
                                 a11yEnabled = AwarenessAccessibilityService.isConnected()
-                                micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
-                                val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                                projectionLauncher.launch(mpm.createScreenCaptureIntent())
-                                status = "requesting capture…"
+                                status = "requesting permissions…"
+                                if (hasAllRuntimePermissions()) {
+                                    val mpm = getSystemService(MEDIA_PROJECTION_SERVICE)
+                                        as MediaProjectionManager
+                                    projectionLauncher.launch(mpm.createScreenCaptureIntent())
+                                } else {
+                                    // Request RECORD_AUDIO + POST_NOTIFICATIONS
+                                    // first; the callback then launches the
+                                    // MediaProjection picker. Doing both in
+                                    // the same onClick would race and the
+                                    // foreground service crash on Android 14+.
+                                    runtimePermissionsLauncher.launch(requiredRuntimePermissions())
+                                }
                             },
                         ) {
                             Text("Start capture")

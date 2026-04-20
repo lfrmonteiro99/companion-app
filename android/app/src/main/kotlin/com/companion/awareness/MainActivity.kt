@@ -272,6 +272,11 @@ class MainActivity : ComponentActivity() {
                         }) {
                             Text("View pipeline trace")
                         }
+                        Button(onClick = {
+                            startActivity(Intent(this@MainActivity, ProfileActivity::class.java))
+                        }) {
+                            Text("Edit profile")
+                        }
                     }
                 }
             }

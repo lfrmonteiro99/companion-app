@@ -254,13 +254,33 @@ impl OpenAiClient {
         Ok(Self { http, api_key })
     }
 
-    pub async fn filter_call(&self, event: &ContextEvent, memory: &str) -> Result<FilterResponse> {
+    pub async fn filter_call(
+        &self,
+        event: &ContextEvent,
+        memory: &str,
+        user_profile: &str,
+    ) -> Result<FilterResponse> {
         let event_json =
             serde_json::to_string(event).context("failed to serialise ContextEvent")?;
         let user_content = if memory.is_empty() {
             event_json
         } else {
             format!("Histórico recente (oldest first):\n{memory}\n\nContexto actual:\n{event_json}")
+        };
+
+        // Prepend any accumulated user profile (bio + interests +
+        // anti-interests + top apps) to the system content. Keeps the
+        // original instruction block intact while giving the model a
+        // concrete picture of who the user is and what kind of alerts
+        // they've opted into.
+        let system_content = if user_profile.trim().is_empty() {
+            SYSTEM_PROMPT.to_string()
+        } else {
+            format!(
+                "PERFIL DO UTILIZADOR (prioriza isto ao decidir o que é relevante):\n{}\n\n---\n\n{}",
+                user_profile.trim(),
+                SYSTEM_PROMPT,
+            )
         };
 
         let body = ChatRequest {
@@ -273,7 +293,7 @@ impl OpenAiClient {
             messages: vec![
                 ChatMessage {
                     role: "system".to_string(),
-                    content: SYSTEM_PROMPT.to_string(),
+                    content: system_content,
                 },
                 ChatMessage {
                     role: "user".to_string(),

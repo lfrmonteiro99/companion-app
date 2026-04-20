@@ -17,3 +17,4 @@ pub mod gate;
 pub mod jsonl;
 pub mod memory;
 pub mod types;
+pub mod user_profile;

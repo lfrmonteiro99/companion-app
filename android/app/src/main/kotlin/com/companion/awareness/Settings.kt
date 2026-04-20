@@ -19,6 +19,7 @@ object Settings {
     private const val KEY_OPENAI = "openai_api_key"
     private const val KEY_BUDGET_USD = "budget_usd_daily"
     private const val KEY_TTS_ENABLED = "tts_enabled"
+    private const val KEY_USER_BIO = "user_bio"
     private const val DEFAULT_BUDGET_USD = 0.5f
     private const val DEFAULT_TTS_ENABLED = true
 
@@ -59,5 +60,12 @@ object Settings {
 
     fun setTtsEnabled(ctx: Context, value: Boolean) {
         plainPrefs(ctx).edit().putBoolean(KEY_TTS_ENABLED, value).apply()
+    }
+
+    fun userBio(ctx: Context): String =
+        plainPrefs(ctx).getString(KEY_USER_BIO, "") ?: ""
+
+    fun setUserBio(ctx: Context, value: String) {
+        plainPrefs(ctx).edit().putString(KEY_USER_BIO, value).apply()
     }
 }

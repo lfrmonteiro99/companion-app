@@ -32,4 +32,17 @@ object CoreBridge {
      * coroutine.
      */
     external fun analyze(eventJson: String): String
+
+    /** Free-text biography the user can edit in ProfileActivity.
+     *  Prepended to every system prompt from the next tick on. */
+    external fun setBio(bio: String)
+
+    /** Record a rating from a notification action. `positive=true` when
+     *  the user tapped "mais disto"; the topic is appended to the
+     *  profile's interests (or anti-interests on false). */
+    external fun learnInterest(topic: String, positive: Boolean)
+
+    /** JSON snapshot of the current profile — used by ProfileActivity
+     *  to render bio + interests + anti-interests + top-apps summary. */
+    external fun getProfileText(): String
 }

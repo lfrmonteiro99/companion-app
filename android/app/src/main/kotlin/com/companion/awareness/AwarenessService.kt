@@ -121,6 +121,15 @@ class AwarenessService : Service() {
             return
         }
         CoreBridge.configure(key, Settings.budgetUsdDaily(this), filesDir.absolutePath)
+        // Sync the stored bio into the Rust profile so every analyze
+        // call includes it. Interests accumulated via rating actions
+        // persist on the Rust side already.
+        val bio = Settings.userBio(this)
+        if (bio.isNotBlank()) {
+            runCatching { CoreBridge.setBio(bio) }.onFailure { t ->
+                AppLog.w(TAG, "setBio failed", t)
+            }
+        }
     }
 
     private suspend fun runTickLoop() {
@@ -319,11 +328,34 @@ class AwarenessService : Service() {
             "medium" -> NotificationCompat.PRIORITY_DEFAULT
             else -> NotificationCompat.PRIORITY_LOW
         }
+        val notifId = alertCounter.incrementAndGet()
+
         val tap = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+
+        // Rating actions feed the user-profile learner. The "topic"
+        // we pass is the alert body itself (truncated) so the Rust
+        // side has enough context to store something meaningful on
+        // either side of the like/dislike axis.
+        val topic = body.take(160)
+        val likeIntent = Intent(this, RatingReceiver::class.java)
+            .setAction(RatingReceiver.ACTION_RATE)
+            .putExtra(RatingReceiver.EXTRA_TOPIC, topic)
+            .putExtra(RatingReceiver.EXTRA_POSITIVE, true)
+            .putExtra(RatingReceiver.EXTRA_NOTIF_ID, notifId)
+        val dislikeIntent = Intent(this, RatingReceiver::class.java)
+            .setAction(RatingReceiver.ACTION_RATE)
+            .putExtra(RatingReceiver.EXTRA_TOPIC, topic)
+            .putExtra(RatingReceiver.EXTRA_POSITIVE, false)
+            .putExtra(RatingReceiver.EXTRA_NOTIF_ID, notifId)
+
+        val piFlags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val likePi = PendingIntent.getBroadcast(this, notifId * 2, likeIntent, piFlags)
+        val dislikePi = PendingIntent.getBroadcast(this, notifId * 2 + 1, dislikeIntent, piFlags)
+
         val notif = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(body)
@@ -332,9 +364,11 @@ class AwarenessService : Service() {
             .setPriority(priority)
             .setAutoCancel(true)
             .setContentIntent(tap)
+            .addAction(android.R.drawable.ic_menu_add, "Mais disto", likePi)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Não interessa", dislikePi)
             .build()
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(alertCounter.incrementAndGet(), notif)
+        nm.notify(notifId, notif)
 
         if (Settings.ttsEnabled(this)) Tts.speak(body)
     }

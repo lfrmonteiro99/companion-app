@@ -25,6 +25,7 @@ use awareness_core::config::Config;
 use awareness_core::gate::{self, GateAction, GateDecision, GateState};
 use awareness_core::memory::{MemoryEntry, MemoryRing};
 use awareness_core::types::{ContextEvent, FilterResponse};
+use awareness_core::user_profile::UserProfile;
 use jni::objects::{JClass, JString};
 use jni::sys::{jdouble, jstring};
 use jni::JNIEnv;
@@ -50,6 +51,11 @@ struct CoreState {
     /// alert. Walked by jaccard_trigrams on the next tick to drop
     /// duplicates before spending API tokens.
     alerted_screens: std::collections::VecDeque<String>,
+    /// Persistent user profile (bio + interests + anti-interests +
+    /// app usage) — prepended to the system prompt so the model
+    /// tailors alerts instead of treating the user as generic.
+    profile: UserProfile,
+    profile_path: PathBuf,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -103,7 +109,10 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_configure<'local>
             return;
         }
     };
-    let budget = BudgetController::new(budget_usd_daily, &PathBuf::from(dir));
+    let files_dir = PathBuf::from(&dir);
+    let budget = BudgetController::new(budget_usd_daily, &files_dir);
+    let profile_path = files_dir.join("user_profile.json");
+    let profile = UserProfile::load(&profile_path);
     *state_slot().lock().unwrap() = Some(CoreState {
         client,
         config,
@@ -111,6 +120,8 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_configure<'local>
         memory: MemoryRing::new(MEMORY_CAPACITY),
         budget,
         alerted_screens: std::collections::VecDeque::with_capacity(SCREEN_FINGERPRINT_CAPACITY),
+        profile,
+        profile_path,
     });
     log::info!("configure: core state ready (budget ${budget_usd_daily:.2}/day)");
 }
@@ -215,8 +226,15 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
         );
     }
 
+    // Track app usage passively every tick; feeds "top apps"
+    // heuristic in the user profile.
+    if let Some(app) = event.app.as_deref() {
+        state.profile.record_app_usage(app);
+    }
+
     // 3. API call with rolling memory as context.
     let memory_lines = state.memory.to_prompt_lines();
+    let profile_ctx = state.profile.to_prompt_context();
     let client = state.client.clone();
     // Drop the mutex while the HTTP call is in flight — Kotlin invokes
     // analyze from a background coroutine and may schedule another tick.
@@ -225,7 +243,7 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
 
     let response: FilterResponse = runtime().block_on(async move {
         client
-            .filter_call(&event_for_api, &memory_lines)
+            .filter_call(&event_for_api, &memory_lines, &profile_ctx)
             .await
             .unwrap_or_else(|e| FilterResponse {
                 should_alert: false,
@@ -292,10 +310,88 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
                     state.alerted_screens.push_back(current_screen.clone());
                 }
             }
+            // Persist the updated profile (app usage counter bumped
+            // earlier in this handler). Cheap JSON write; skipped on
+            // failure so analyze never blows up over a filesystem
+            // hiccup.
+            let _ = state.profile.save(&state.profile_path);
         }
     }
 
     ok_json(&mut env, &response)
+}
+
+// ── User profile JNI surface ────────────────────────────────────────
+
+fn with_state_mut<F: FnOnce(&mut CoreState)>(f: F) {
+    if let Some(state) = state_slot().lock().unwrap().as_mut() {
+        f(state);
+    }
+}
+
+fn state_profile_save(state: &CoreState) {
+    let _ = state.profile.save(&state.profile_path);
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_companion_awareness_CoreBridge_setBio<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    bio: JString<'local>,
+) {
+    let bio: String = match env.get_string(&bio) {
+        Ok(s) => s.into(),
+        Err(_) => return,
+    };
+    with_state_mut(|state| {
+        state.profile.set_bio(bio);
+        state_profile_save(state);
+    });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_companion_awareness_CoreBridge_learnInterest<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    topic: JString<'local>,
+    positive: jni::sys::jboolean,
+) {
+    let topic: String = match env.get_string(&topic) {
+        Ok(s) => s.into(),
+        Err(_) => return,
+    };
+    with_state_mut(|state| {
+        if positive != 0 {
+            state.profile.add_interest(&topic);
+        } else {
+            state.profile.add_anti_interest(&topic);
+        }
+        state_profile_save(state);
+    });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_companion_awareness_CoreBridge_getProfileText<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    let body = state_slot()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| {
+            serde_json::json!({
+                "bio": s.profile.bio,
+                "interests": s.profile.interests,
+                "anti_interests": s.profile.anti_interests,
+                "top_apps": s.profile.to_prompt_context(),
+            })
+            .to_string()
+        })
+        .unwrap_or_else(|| "{}".to_string());
+    env.new_string(body)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 fn ok_json(env: &mut JNIEnv, response: &FilterResponse) -> jstring {

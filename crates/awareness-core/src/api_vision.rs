@@ -332,6 +332,7 @@ impl VisionClient {
         image_png: &[u8],
         memory: &str,
         reason: &str,
+        user_profile: &str,
     ) -> Result<FilterResponse> {
         let tier = pick_tier(event, reason, &self.sharp_apps);
         tracing::info!("vision tier={:?} reason={reason}", tier);
@@ -346,12 +347,22 @@ impl VisionClient {
         let b64 = B64.encode(image_png);
         let data_url = format!("data:image/png;base64,{b64}");
 
+        let system_content = if user_profile.trim().is_empty() {
+            VISION_SYSTEM_PROMPT.to_string()
+        } else {
+            format!(
+                "PERFIL DO UTILIZADOR (prioriza isto ao decidir o que é relevante):\n{}\n\n---\n\n{}",
+                user_profile.trim(),
+                VISION_SYSTEM_PROMPT,
+            )
+        };
+
         let body = ChatRequest {
             model: tier.model().to_string(),
             messages: vec![
                 ChatMessage::System {
                     role: "system",
-                    content: VISION_SYSTEM_PROMPT.to_string(),
+                    content: system_content,
                 },
                 ChatMessage::UserMulti {
                     role: "user",

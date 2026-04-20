@@ -36,11 +36,15 @@ impl Backend {
         image_png: Option<&[u8]>,
         memory_summary: &str,
         reason: &str,
+        user_profile: &str,
     ) -> Result<FilterResponse> {
         match self {
-            Backend::Text(c) => c.filter_call(event, memory_summary).await,
+            Backend::Text(c) => c.filter_call(event, memory_summary, user_profile).await,
             Backend::Vision(c) => match image_png {
-                Some(b) => c.analyze_with_image(event, b, memory_summary, reason).await,
+                Some(b) => {
+                    c.analyze_with_image(event, b, memory_summary, reason, user_profile)
+                        .await
+                }
                 None => anyhow::bail!("vision backend called without image"),
             },
         }

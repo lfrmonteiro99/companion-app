@@ -65,6 +65,16 @@
             android:label="Pipeline trace"
             android:parentActivityName=".MainActivity" />
 
+        <activity
+            android:name=".ProfileActivity"
+            android:exported="false"
+            android:label="Profile"
+            android:parentActivityName=".MainActivity" />
+
+        <receiver
+            android:name=".RatingReceiver"
+            android:exported="false" />
+
         <service
             android:name=".AwarenessService"
             android:foregroundServiceType="mediaProjection|microphone|specialUse"

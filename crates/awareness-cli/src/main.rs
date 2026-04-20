@@ -224,7 +224,7 @@ async fn process_send(
     let mem_str = memory.lock().await.to_prompt_lines();
 
     let resp = match backend
-        .analyze(event, img_ref, &mem_str, &decision.reason)
+        .analyze(event, img_ref, &mem_str, &decision.reason, "")
         .await
     {
         Ok(r) => r,

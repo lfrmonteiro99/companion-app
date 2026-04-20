@@ -8,12 +8,20 @@ android {
     namespace = "com.companion.awareness"
     compileSdk = 34
 
+    // CI passes `-PawarenessVersionCode=<run_number>` and
+    // `-PawarenessVersionName=0.1.<run_number>` so the APK's internal
+    // version matches the GitHub release tag. Local `./gradlew` builds
+    // (no properties supplied) keep the 1 / 0.1.0 fallback so nothing
+    // regresses for developers building off-CI.
+    val ciVersionCode = providers.gradleProperty("awarenessVersionCode").orNull?.toIntOrNull()
+    val ciVersionName = providers.gradleProperty("awarenessVersionName").orNull
+
     defaultConfig {
         applicationId = "com.companion.awareness"
         minSdk = 29
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = ciVersionCode ?: 1
+        versionName = ciVersionName ?: "0.1.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")

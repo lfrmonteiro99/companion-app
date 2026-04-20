@@ -4,10 +4,20 @@ name: Release Android APK
 # Builds the Rust core for the Android ABIs we ship, assembles a debug
 # APK, creates a tag `v0.1.<run_number>`, and attaches the APK to a new
 # GitHub release so it can be side-loaded on a phone.
+#
+# Path filter skips releases when a commit can't possibly change the APK
+# (Linux-CLI-only edits, docs, scripts, data). Everything that IS in the
+# APK — Android sources, shared Rust core, Cargo lock, this workflow
+# file — keeps triggering. `workflow_dispatch` bypasses the filter.
 on:
   push:
     branches: [main]
-  # Allow manual re-runs without a new commit.
+    paths:
+      - "android/**"
+      - "crates/awareness-core/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 concurrency:
@@ -87,7 +97,12 @@ jobs:
 
       - name: Assemble debug APK
         working-directory: android
-        run: gradle :app:assembleDebug --no-daemon
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          gradle :app:assembleDebug --no-daemon \
+            -PawarenessVersionCode="$RUN_NUMBER" \
+            -PawarenessVersionName="0.1.$RUN_NUMBER"
 
       - name: Locate APK
         id: apk
@@ -98,22 +113,50 @@ jobs:
           cp "$path" "$dest"
           echo "path=$dest" >> "$GITHUB_OUTPUT"
 
+      # --- Build the release body ---------------------------------------
+      - name: Compose release notes
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          APK: ${{ steps.apk.outputs.path }}
+          TAG: ${{ env.TAG }}
+        run: |
+          set -euo pipefail
+          # Previous release tag, or empty if this is the first release.
+          prev_tag=$(gh release list --limit 1 --json tagName \
+                      --jq '.[0].tagName // ""' 2>/dev/null || true)
+
+          if [ -n "$prev_tag" ] && git rev-parse -q --verify "$prev_tag" >/dev/null; then
+            commits=$(git log --no-merges --pretty=format:'- %s (%h)' "$prev_tag..HEAD")
+            range_line="Changes since \`$prev_tag\`:"
+          else
+            commits=$(git log --no-merges --pretty=format:'- %s (%h)' -20)
+            range_line="Recent commits:"
+          fi
+          # Fallback when there are no non-merge commits in the range.
+          [ -z "$commits" ] && commits="- (no code changes; workflow re-run)"
+
+          {
+            echo "Automated release from $SHA."
+            echo ""
+            echo "$range_line"
+            echo ""
+            echo "$commits"
+            echo ""
+            echo "**Install**: download \`$APK\`, transfer to the phone, open it. Android will warn about an unknown source — this is a debug-signed APK."
+            echo ""
+            echo "**Not for production**: debug signing + unencrypted API-key storage. See android/README for the shipping checklist."
+          } > release_body.md
+          echo "body_path=release_body.md" >> "$GITHUB_OUTPUT"
+
       # --- Publish the release -----------------------------------------
       - name: Create GitHub release and upload APK
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
           name: ${{ env.TAG }}
-          body: |
-            Automated release from ${{ github.sha }}.
-
-            **Install**: download `${{ steps.apk.outputs.path }}`, transfer
-            to the phone (USB or cloud), then open it on the device.
-            Android will prompt to allow installs from this source — this
-            is a debug-signed APK so you'll need to accept that warning.
-
-            **Not for production**: debug signing + unencrypted
-            API-key storage. See `android/README` for the shipping checklist.
+          body_path: ${{ steps.notes.outputs.body_path }}
           files: ${{ steps.apk.outputs.path }}
           draft: false
           prerelease: false

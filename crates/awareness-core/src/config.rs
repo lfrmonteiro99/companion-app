@@ -354,7 +354,11 @@ impl Config {
             gate_text_change_cooldown_seconds: 6,
             gate_voice_cooldown_seconds: 5,
             gate_frustration_keywords: default_frustration_keywords(),
-            min_send_interval_seconds: 15,
+            // 45s dampens the "same page → same alert, again and again"
+            // spam on pages that don't change meaningfully (diff view
+            // of a PR, docs, a message already read). emotional /
+            // voice_activity bypass this cooldown in gate::evaluate.
+            min_send_interval_seconds: 45,
             transcript_window_size: 5,
             tts_enabled: false,
             tts_command: None,
@@ -489,7 +493,7 @@ mod tests {
         assert_eq!(cfg.gate_text_new_words_threshold, 5);
         assert_eq!(cfg.gate_text_change_cooldown_seconds, 6);
         assert_eq!(cfg.gate_voice_cooldown_seconds, 5);
-        assert_eq!(cfg.min_send_interval_seconds, 15);
+        assert_eq!(cfg.min_send_interval_seconds, 45);
         assert!(
             !cfg.gate_frustration_keywords.is_empty(),
             "frustration keywords must be preloaded"

@@ -122,7 +122,9 @@ class AwarenessService : Service() {
     private suspend fun runTickLoop() {
         var appStartedAt = System.currentTimeMillis()
         var lastApp: String? = null
+        var tickId = 0L
         while (true) {
+            tickId++
             val a11y = AwarenessAccessibilityService.latest()
             val currentApp = a11y?.packageName
                 ?.takeIf { it != packageName }
@@ -140,6 +142,14 @@ class AwarenessService : Service() {
             val windowTitle = a11y?.windowTitle
             val micText = audio?.drainTranscript()
 
+            TraceLog.captured(
+                tickId,
+                currentApp,
+                screenText.length,
+                micText != null,
+                screenText.replace('\n', ' '),
+            )
+
             // Self-observation guard. The OCR pass sometimes captures
             // the notification shade or our own LogsActivity, so the text
             // contains our own package name + crash traces. Feeding that
@@ -150,6 +160,7 @@ class AwarenessService : Service() {
                 screenText.contains("AwarenessApp") ||
                 screenText.contains("awareness-core")
             if (looksSelfReferential) {
+                TraceLog.gateSkip(tickId, "self_referential")
                 delay(TICK_MS)
                 continue
             }
@@ -167,25 +178,66 @@ class AwarenessService : Service() {
 
             try {
                 val responseJson = CoreBridge.analyze(eventJson)
-                handleResponse(responseJson)
+                traceAndHandle(tickId, responseJson)
             } catch (t: Throwable) {
                 AppLog.e(TAG, "analyze failed", t)
+                TraceLog.analyzeFail(tickId, t.message ?: t.javaClass.simpleName)
             }
 
             delay(TICK_MS)
         }
     }
 
-    private fun handleResponse(responseJson: String) {
+    /**
+     * Inspect the JSON returned by CoreBridge.analyze, emit the
+     * appropriate trace entry (gate skip / budget / API response) and
+     * then delegate to handleResponse for the actual notification
+     * dispatch. This lives in the service instead of inside
+     * handleResponse so we can see EVERY cycle, not just the ones that
+     * produced an alert.
+     */
+    private fun traceAndHandle(tickId: Long, responseJson: String) {
         val obj = runCatching { JSONObject(responseJson) }.getOrNull() ?: return
+        val alertType = obj.optString("alert_type", "")
         val shouldAlert = obj.optBoolean("should_alert", false)
-        if (!shouldAlert) return
-
-        val alertType = obj.optString("alert_type", "alert")
-        val title = alertType.replaceFirstChar { it.uppercase() }
-        val body = obj.optString("quick_message", "")
+        val cost = obj.optDouble("cost_usd", 0.0)
+        val message = obj.optString("quick_message", "")
         val urgency = obj.optString("urgency", "low")
+
+        when {
+            // The Rust core prefixes skipped gate decisions with "skipped:".
+            alertType.startsWith("skipped:") ->
+                TraceLog.gateSkip(tickId, alertType.removePrefix("skipped:"))
+            alertType == "budget_exceeded" ->
+                TraceLog.budgetExceeded(tickId)
+            else -> {
+                TraceLog.gateSend(tickId, "api_call")
+                TraceLog.apiResponse(tickId, alertType, shouldAlert, cost, message)
+            }
+        }
+
+        handleResponse(tickId, responseJson, alertType, shouldAlert, message, urgency)
+    }
+
+    private fun handleResponse(
+        tickId: Long,
+        responseJson: String,
+        alertType: String,
+        shouldAlert: Boolean,
+        body: String,
+        urgency: String,
+    ) {
+        if (!shouldAlert) {
+            TraceLog.notificationSuppressed(tickId, "model said should_alert=false")
+            return
+        }
+        if (body.isBlank()) {
+            TraceLog.notificationSuppressed(tickId, "empty quick_message")
+            return
+        }
+        val title = alertType.replaceFirstChar { it.uppercase() }
         postAlert(title, body, urgency)
+        TraceLog.notificationPosted(tickId, alertType, urgency)
 
         AlertLog.append(
             this,

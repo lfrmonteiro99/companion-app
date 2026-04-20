@@ -55,6 +55,12 @@
             android:label="App log"
             android:parentActivityName=".MainActivity" />
 
+        <activity
+            android:name=".TraceActivity"
+            android:exported="false"
+            android:label="Pipeline trace"
+            android:parentActivityName=".MainActivity" />
+
         <service
             android:name=".AwarenessService"
             android:foregroundServiceType="mediaProjection|microphone"

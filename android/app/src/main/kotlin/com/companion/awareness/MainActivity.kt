@@ -249,6 +249,11 @@ class MainActivity : ComponentActivity() {
                         }) {
                             Text("View app log")
                         }
+                        Button(onClick = {
+                            startActivity(Intent(this@MainActivity, TraceActivity::class.java))
+                        }) {
+                            Text("View pipeline trace")
+                        }
                     }
                 }
             }

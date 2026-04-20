@@ -11,6 +11,7 @@ class AwarenessApp : Application() {
     override fun onCreate() {
         super.onCreate()
         AppLog.attach(this)
+        TraceLog.attach(this)
         AppLog.installCrashHandler()
         AppLog.i("AwarenessApp", "process start")
     }

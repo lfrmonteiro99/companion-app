@@ -38,8 +38,19 @@ const MEMORY_CAPACITY: usize = 10;
 /// tick whose screen_text_excerpt matches one of these by trigram
 /// similarity ≥ SCREEN_DUP_THRESHOLD is short-circuited BEFORE the API
 /// call, so we don't pay tokens to re-confirm what we already alerted.
-const SCREEN_FINGERPRINT_CAPACITY: usize = 16;
-const SCREEN_DUP_THRESHOLD: f32 = 0.7;
+///
+/// 0.85 (was 0.7) because feeds (Reddit/IG/LinkedIn) share enough
+/// chrome across different posts to trip a 0.7 threshold — the user
+/// complained of "few notifications" after adding many interests, and
+/// the pre-API dedup was eating posts that were genuinely different.
+/// Ring capacity 8 (was 16) so old alerts fall out sooner.
+const SCREEN_FINGERPRINT_CAPACITY: usize = 8;
+const SCREEN_DUP_THRESHOLD: f32 = 0.85;
+/// Same story for the post-API quick_message comparison against the
+/// memory ring: model's format ("Observação/Porque/Pensa") gives
+/// structurally similar messages across different topics, so 0.7
+/// collapsed valid new alerts into "duplicate".
+const POST_API_DUP_THRESHOLD: f32 = 0.85;
 
 struct CoreState {
     client: OpenAiClient,
@@ -268,7 +279,7 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
                     awareness_core::dedup::TextDedup::jaccard_trigrams(
                         &response.quick_message,
                         &e.quick_message,
-                    ) >= 0.7
+                    ) >= POST_API_DUP_THRESHOLD
                 });
                 if dup {
                     log::info!(

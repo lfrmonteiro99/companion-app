@@ -36,14 +36,28 @@ class AwarenessService : Service() {
     private val alertCounter = AtomicInteger(ALERT_ID_BASE)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
+        val data: Intent? = intent?.getParcelableExtra(EXTRA_DATA)
+
+        // Android re-starts foreground services after the process dies.
+        // That restart does NOT carry the MediaProjection token back — the
+        // appop `android:project_media` is granted only while the user's
+        // active consent is live, and expires when the process exits. If
+        // we try to startForeground with FOREGROUND_SERVICE_TYPE_MEDIA_-
+        // PROJECTION without that appop, Android 14 throws SecurityException
+        // and the service crash-loops. Bail cleanly so the user has to
+        // press Start again (we also return START_NOT_STICKY below so the
+        // restart never happens in the first place).
+        if (resultCode == 0 || data == null) {
+            AppLog.w(TAG, "onStartCommand without MediaProjection token (likely a restart); stopping")
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         startForegroundWithType()
         ensureAlertChannel()
 
-        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
-        val data: Intent? = intent?.getParcelableExtra(EXTRA_DATA)
-        if (resultCode != 0 && data != null) {
-            screen = ScreenCapture(this, resultCode, data).also { it.start() }
-        }
+        screen = ScreenCapture(this, resultCode, data).also { it.start() }
         // AudioRecord throws on construction without RECORD_AUDIO; the
         // service is allowed to start without mic, so skip audio wiring
         // when the user denied the permission.
@@ -58,7 +72,10 @@ class AwarenessService : Service() {
 
         loopJob?.cancel()
         loopJob = scope.launch { runTickLoop() }
-        return START_STICKY
+        // NOT_STICKY: don't let Android resurrect us without a fresh
+        // MediaProjection grant. The user's Start button is the only
+        // legitimate entry point.
+        return START_NOT_STICKY
     }
 
     private fun configureCoreFromStoredKey() {
@@ -90,6 +107,20 @@ class AwarenessService : Service() {
                 ?: screen?.latestText().orEmpty()
             val windowTitle = a11y?.windowTitle
             val micText = audio?.drainTranscript()
+
+            // Self-observation guard. The OCR pass sometimes captures
+            // the notification shade or our own LogsActivity, so the text
+            // contains our own package name + crash traces. Feeding that
+            // to the model just produces alerts *about* our previous
+            // alerts, in a tightening loop. Drop those ticks entirely.
+            val looksSelfReferential = currentApp == packageName ||
+                screenText.contains("com.companion.awareness") ||
+                screenText.contains("AwarenessApp") ||
+                screenText.contains("awareness-core")
+            if (looksSelfReferential) {
+                delay(TICK_MS)
+                continue
+            }
 
             val eventJson = JSONObject().apply {
                 put("timestamp", Instant.now().toString())

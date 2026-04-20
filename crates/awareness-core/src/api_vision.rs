@@ -4,8 +4,8 @@ use reqwest::Client;
 use serde::Serialize;
 use std::time::Duration;
 
-use crate::types::{ContextEvent, FilterResponse};
 use crate::config::Config;
+use crate::types::{ContextEvent, FilterResponse};
 
 // ── Request structs ──────────────────────────────────────────────────────────
 
@@ -310,8 +310,8 @@ impl VisionClient {
         let tier = pick_tier(event, reason, &self.sharp_apps);
         tracing::info!("vision tier={:?} reason={reason}", tier);
 
-        let event_json = serde_json::to_string(event)
-            .context("failed to serialise ContextEvent")?;
+        let event_json =
+            serde_json::to_string(event).context("failed to serialise ContextEvent")?;
         let text_block = if memory.is_empty() {
             format!("Contexto local: {event_json}")
         } else {
@@ -330,9 +330,7 @@ impl VisionClient {
                 ChatMessage::UserMulti {
                     role: "user",
                     content: vec![
-                        ContentPart::Text {
-                            text: text_block,
-                        },
+                        ContentPart::Text { text: text_block },
                         ContentPart::ImageUrl {
                             image_url: ImageUrl {
                                 url: data_url,
@@ -390,8 +388,8 @@ impl VisionClient {
             let tokens_in = chat.usage.prompt_tokens;
             let tokens_out = chat.usage.completion_tokens;
             let (in_rate, out_rate) = tier.pricing();
-            let cost_usd =
-                tokens_in as f64 * in_rate / 1_000_000.0 + tokens_out as f64 * out_rate / 1_000_000.0;
+            let cost_usd = tokens_in as f64 * in_rate / 1_000_000.0
+                + tokens_out as f64 * out_rate / 1_000_000.0;
 
             let raw_content = chat
                 .choices

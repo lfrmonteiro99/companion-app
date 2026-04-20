@@ -18,6 +18,11 @@ pub struct OcrOutput {
     /// OCR of top 60px strip — used to infer app name.
     pub title_bar_text: String,
     pub inferred_app_name: Option<String>,
+    /// Active window bounding box in screen pixels (x, y, width, height),
+    /// when exposed by the accessibility layer. Callers use it to crop the
+    /// full-screen frame to the focused window before OCR/vision, so the
+    /// model stops seeing the whole desktop confetti.
+    pub active_bbox: Option<(i32, i32, u32, u32)>,
 }
 
 /// Raw audio buffer ready for an STT engine.
@@ -61,8 +66,8 @@ pub struct ContextEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilterResponse {
     pub should_alert: bool,
-    pub alert_type: String,       // "focus"|"time_spent"|"emotional"|"preparation"|"voice_reply"|"none"
-    pub urgency: String,          // "low"|"medium"|"high"
+    pub alert_type: String, // "focus"|"time_spent"|"emotional"|"preparation"|"voice_reply"|"none"
+    pub urgency: String,    // "low"|"medium"|"high"
     pub needs_deep_analysis: bool,
     pub quick_message: String,
     pub tokens_in: u32,

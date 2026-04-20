@@ -33,7 +33,7 @@ base64 = "0.22"
 [features]
 default = []
 # Composable features so CI can check subsets that don't need all system libs.
-portal = ["dep:ashpd", "dep:pipewire"]
+portal = ["dep:ashpd", "dep:pipewire", "dep:libc"]
 ocr    = ["dep:leptess"]
 audio  = ["dep:cpal", "dep:webrtc-vad", "dep:whisper-rs"]
 full   = ["portal", "ocr", "audio", "awareness-core/full"]
@@ -62,6 +62,10 @@ optional = true
 
 [dependencies.pipewire]
 version = "0.8"
+optional = true
+
+[dependencies.libc]
+version = "0.2"
 optional = true
 
 [dev-dependencies]

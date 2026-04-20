@@ -1,13 +1,13 @@
+use crate::gate::GateDecision;
+use crate::tts::{self, TtsConfig};
 use anyhow::Result;
+use awareness_core::types::{ContextEvent, FilterResponse};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
-use awareness_core::types::{ContextEvent, FilterResponse};
-use crate::gate::GateDecision;
-use crate::tts::{self, TtsConfig};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -83,7 +83,14 @@ pub async fn spawn_eval_loop(
 
     let handle = tokio::spawn(async move {
         while let Some(prompt) = alert_rx.recv().await {
-            handle_prompt(&prompt, &ratings_path, &fallback_path, &mut line_rx, &tts_config).await;
+            handle_prompt(
+                &prompt,
+                &ratings_path,
+                &fallback_path,
+                &mut line_rx,
+                &tts_config,
+            )
+            .await;
         }
     });
 
@@ -113,22 +120,51 @@ async fn handle_prompt(
 
     let urgency = match prompt.api_response.urgency.as_str() {
         "high" => "critical",
-        "low"  => "low",
-        _      => "normal",
+        "low" => "low",
+        _ => "normal",
     };
     let notify_title = format!("Awareness — {}", alert_type_upper);
-    let _ = tokio::process::Command::new("notify-send")
-        .args([
-            "--app-name=awareness-cli",
-            "--icon=dialog-information",
-            "--expire-time=15000",
-            &format!("--urgency={urgency}"),
-            &notify_title,
-            quick_message,
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    // notify-send from libnotify >= 0.8 (Ubuntu 24.04+) rejects
+    // `--expire-time=N` and `--urgency=X` in the single-token `=` form for
+    // long options; it wants them space-separated. Previously the failure
+    // was silently swallowed with `let _ = spawn()`, so every alert died
+    // without a desktop popup even when the API succeeded.
+    let mut cmd = tokio::process::Command::new("notify-send");
+    cmd.args([
+        "--app-name",
+        "awareness-cli",
+        "--icon",
+        "dialog-information",
+        "--expire-time",
+        "15000",
+        "--urgency",
+        urgency,
+        &notify_title,
+        quick_message,
+    ])
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::piped());
+    match cmd.spawn() {
+        Ok(mut child) => {
+            let quick_message = quick_message.to_string();
+            tokio::spawn(async move {
+                match child.wait().await {
+                    Ok(status) if status.success() => {
+                        tracing::debug!("notify-send ok: {:?}", quick_message);
+                    }
+                    Ok(status) => {
+                        tracing::warn!(
+                            "notify-send exited non-zero: {status}; desktop notification may not have appeared"
+                        );
+                    }
+                    Err(e) => tracing::warn!("notify-send wait failed: {e}"),
+                }
+            });
+        }
+        Err(e) => tracing::warn!(
+            "notify-send spawn failed: {e}. Install libnotify-bin if missing."
+        ),
+    }
 
     tts::speak(quick_message, tts_config);
 
@@ -157,7 +193,9 @@ async fn handle_prompt(
         if let Err(e2) = append_rating(fallback_path, &rating).await {
             tracing::error!(
                 "Also failed fallback write to {:?}: {:?}. Raw line: {:?}",
-                fallback_path, e2, rating,
+                fallback_path,
+                e2,
+                rating,
             );
         }
     }
@@ -254,17 +292,32 @@ mod tests {
 
     #[test]
     fn rating_map_empty_input_is_skipped() {
-        assert_eq!(rating_from_outcome(&PromptOutcome::Input("".into())), "skipped");
-        assert_eq!(rating_from_outcome(&PromptOutcome::Input("  \n".into())), "skipped");
+        assert_eq!(
+            rating_from_outcome(&PromptOutcome::Input("".into())),
+            "skipped"
+        );
+        assert_eq!(
+            rating_from_outcome(&PromptOutcome::Input("  \n".into())),
+            "skipped"
+        );
     }
 
     #[test]
     fn rating_map_unknown_input_is_invalid_not_skipped() {
         // Non-empty input that doesn't match a letter must be distinguishable
         // from a deliberate skip so analysis can flag accidental rubbish input.
-        assert_eq!(rating_from_outcome(&PromptOutcome::Input("x".into())), "invalid");
-        assert_eq!(rating_from_outcome(&PromptOutcome::Input("yes".into())), "invalid");
-        assert_eq!(rating_from_outcome(&PromptOutcome::Input("1".into())), "invalid");
+        assert_eq!(
+            rating_from_outcome(&PromptOutcome::Input("x".into())),
+            "invalid"
+        );
+        assert_eq!(
+            rating_from_outcome(&PromptOutcome::Input("yes".into())),
+            "invalid"
+        );
+        assert_eq!(
+            rating_from_outcome(&PromptOutcome::Input("1".into())),
+            "invalid"
+        );
     }
 
     #[test]
@@ -291,7 +344,9 @@ mod tests {
             rating: "useful".into(),
             note: None,
         };
-        append_rating(&path, &rating).await.expect("write must succeed");
+        append_rating(&path, &rating)
+            .await
+            .expect("write must succeed");
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.ends_with('\n'), "JSONL entries must end with newline");

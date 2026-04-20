@@ -1,12 +1,12 @@
+use crate::config::Config;
+use crate::ocr::OcrOutput;
+use crate::whisper::TranscriptChunk;
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
-use crate::config::Config;
-use crate::ocr::OcrOutput;
-use crate::whisper::TranscriptChunk;
 
 pub use awareness_core::types::ContextEvent;
 
@@ -39,7 +39,9 @@ fn build_event(
     if total_chars > SCREEN_TEXT_MAX_CHARS {
         tracing::debug!(
             "screen_text truncated: {}/{} chars kept (app={:?})",
-            SCREEN_TEXT_MAX_CHARS, total_chars, current_app
+            SCREEN_TEXT_MAX_CHARS,
+            total_chars,
+            current_app
         );
     }
 
@@ -231,6 +233,7 @@ mod tests {
             full_text: text.to_string(),
             title_bar_text: title.to_string(),
             inferred_app_name: app.map(|s| s.to_string()),
+            active_bbox: None,
         }
     }
 
@@ -300,13 +303,10 @@ mod tests {
             .send(ocr(Some("vscode"), "main.rs — VSCode", "fn main()"))
             .await
             .unwrap();
-        let ev = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            event_rx.recv(),
-        )
-        .await
-        .expect("aggregator must emit within 1s")
-        .expect("event channel closed unexpectedly");
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("aggregator must emit within 1s")
+            .expect("event channel closed unexpectedly");
         assert_eq!(ev.window_title.as_deref(), Some("main.rs — VSCode"));
         assert_eq!(ev.app.as_deref(), Some("vscode"));
 
@@ -331,14 +331,14 @@ mod tests {
             .send(ocr(Some("app1"), "   ", "body text"))
             .await
             .unwrap();
-        let ev = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            event_rx.recv(),
-        )
-        .await
-        .expect("aggregator must emit within 1s")
-        .expect("event closed");
-        assert_eq!(ev.window_title, None, "whitespace-only title must map to None");
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("aggregator must emit within 1s")
+            .expect("event closed");
+        assert_eq!(
+            ev.window_title, None,
+            "whitespace-only title must map to None"
+        );
 
         // The aggregator loop only exits once both senders are dropped; we
         // got what we asserted so abort instead of blocking forever on the

@@ -1,9 +1,9 @@
 use anyhow::Result;
 
-use crate::types::{ContextEvent, FilterResponse};
 use crate::api::OpenAiClient;
 use crate::api_vision::VisionClient;
 use crate::config::Config;
+use crate::types::{ContextEvent, FilterResponse};
 
 /// Analysis backend. Two implementations share the same FilterResponse shape
 /// so gate/eval/JSONL layers stay unchanged regardless of choice.
@@ -38,10 +38,10 @@ impl Backend {
         reason: &str,
     ) -> Result<FilterResponse> {
         match self {
-            Backend::Text(c)   => c.filter_call(event, memory_summary).await,
+            Backend::Text(c) => c.filter_call(event, memory_summary).await,
             Backend::Vision(c) => match image_png {
                 Some(b) => c.analyze_with_image(event, b, memory_summary, reason).await,
-                None    => anyhow::bail!("vision backend called without image"),
+                None => anyhow::bail!("vision backend called without image"),
             },
         }
     }

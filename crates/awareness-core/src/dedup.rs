@@ -134,7 +134,7 @@ mod tests {
     fn perceptual_dedup_very_different_hash_is_kept() {
         let mut dedup = PerceptualDedup::new(8);
         dedup.should_keep(0x0000_0000_0000_0000); // first
-        // All bits flipped: Hamming distance = 64 >> threshold of 8
+                                                  // All bits flipped: Hamming distance = 64 >> threshold of 8
         assert!(dedup.should_keep(0xFFFF_FFFF_FFFF_FFFF));
     }
 
@@ -171,7 +171,10 @@ mod tests {
     #[test]
     fn jaccard_empty_strings() {
         let sim = TextDedup::jaccard_trigrams("", "");
-        assert!((sim - 1.0).abs() < 1e-6, "expected 1.0 for both empty, got {sim}");
+        assert!(
+            (sim - 1.0).abs() < 1e-6,
+            "expected 1.0 for both empty, got {sim}"
+        );
     }
 
     #[test]

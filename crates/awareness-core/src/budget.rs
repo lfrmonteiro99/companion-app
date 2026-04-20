@@ -19,7 +19,11 @@ pub struct BudgetExceeded {
 
 impl std::fmt::Display for BudgetExceeded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Daily budget exceeded: ${:.4} of ${:.4}", self.spent, self.limit)
+        write!(
+            f,
+            "Daily budget exceeded: ${:.4} of ${:.4}",
+            self.spent, self.limit
+        )
     }
 }
 
@@ -56,7 +60,13 @@ impl BudgetController {
     pub fn new(limit_usd: f64, output_dir: &Path) -> Self {
         let state_path = output_dir.join("budget.json");
         let (spent_usd, day) = Self::load_state(&state_path);
-        Self { spent_usd, limit_usd, day, state_path, writes_since_flush: 0 }
+        Self {
+            spent_usd,
+            limit_usd,
+            day,
+            state_path,
+            writes_since_flush: 0,
+        }
     }
 
     fn load_state(path: &Path) -> (f64, NaiveDate) {
@@ -72,7 +82,10 @@ impl BudgetController {
     }
 
     fn save_state(&self) {
-        let state = BudgetState { spent_usd: self.spent_usd, day: self.day };
+        let state = BudgetState {
+            spent_usd: self.spent_usd,
+            day: self.day,
+        };
         let json = match serde_json::to_string(&state) {
             Ok(j) => j,
             Err(e) => {
@@ -88,7 +101,8 @@ impl BudgetController {
         if let Err(e) = std::fs::rename(&tmp, &self.state_path) {
             tracing::error!(
                 "budget: rename {:?} -> {:?} failed: {e}",
-                tmp, self.state_path
+                tmp,
+                self.state_path
             );
         }
     }
@@ -130,7 +144,10 @@ impl BudgetController {
     pub fn try_reserve(&mut self, estimate: f64) -> Result<Reservation, BudgetExceeded> {
         self.reset_if_new_day();
         if self.spent_usd + estimate > self.limit_usd {
-            return Err(BudgetExceeded { spent: self.spent_usd, limit: self.limit_usd });
+            return Err(BudgetExceeded {
+                spent: self.spent_usd,
+                limit: self.limit_usd,
+            });
         }
         self.spent_usd += estimate;
         self.mark_dirty();
@@ -263,8 +280,8 @@ mod tests {
 
         let raw = std::fs::read_to_string(dir.join("budget.json")).unwrap();
         // Must be parseable JSON with the expected shape.
-        let v: serde_json::Value = serde_json::from_str(&raw)
-            .expect("budget.json must be valid JSON");
+        let v: serde_json::Value =
+            serde_json::from_str(&raw).expect("budget.json must be valid JSON");
         assert!(v.get("spent_usd").is_some());
         assert!(v.get("day").is_some());
     }
@@ -303,7 +320,11 @@ mod tests {
         );
         // Commit the first at actual cost; budget consistent afterwards.
         b.commit(r1, 0.07);
-        assert!((b.spent() - 0.07).abs() < 1e-9, "spent must reflect actual cost, got {}", b.spent());
+        assert!(
+            (b.spent() - 0.07).abs() < 1e-9,
+            "spent must reflect actual cost, got {}",
+            b.spent()
+        );
     }
 
     #[test]
@@ -345,7 +366,9 @@ mod tests {
         let dir = unique_dir("batched-flush");
         let mut b = BudgetController::new(10.0, &dir);
         // BATCH_WRITE_N is 10; do 3 tiny spends — no auto-flush yet.
-        for _ in 0..3 { b.try_spend(0.001).unwrap(); }
+        for _ in 0..3 {
+            b.try_spend(0.001).unwrap();
+        }
         // flush() must persist the current state regardless of the counter.
         b.flush();
         let on_disk: f64 = {
@@ -353,14 +376,21 @@ mod tests {
             let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
             v["spent_usd"].as_f64().unwrap()
         };
-        assert!((on_disk - 0.003).abs() < 1e-9, "flush must persist, got {on_disk}");
+        assert!(
+            (on_disk - 0.003).abs() < 1e-9,
+            "flush must persist, got {on_disk}"
+        );
     }
 
     #[test]
     fn atomic_rename_overwrites_existing_state() {
         let dir = unique_dir("overwrite");
         // Seed the state file with stale content.
-        std::fs::write(dir.join("budget.json"), "{\"spent_usd\":0.0,\"day\":\"2000-01-01\"}").unwrap();
+        std::fs::write(
+            dir.join("budget.json"),
+            "{\"spent_usd\":0.0,\"day\":\"2000-01-01\"}",
+        )
+        .unwrap();
         let mut b = BudgetController::new(1.0, &dir);
         // load_state() already discarded the stale day (returning today
         // instead of 2000-01-01), but the file still contains the stale

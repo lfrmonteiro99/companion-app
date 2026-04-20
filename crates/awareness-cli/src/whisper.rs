@@ -27,9 +27,11 @@ impl WhisperEngine {
             let path_str = model_path
                 .to_str()
                 .ok_or_else(|| anyhow::anyhow!("Model path is not valid UTF-8"))?;
-            let ctx =
-                whisper_rs::WhisperContext::new_with_params(path_str, WhisperContextParameters::default())
-                    .map_err(|e| anyhow::anyhow!("Failed to load whisper model: {e}"))?;
+            let ctx = whisper_rs::WhisperContext::new_with_params(
+                path_str,
+                WhisperContextParameters::default(),
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to load whisper model: {e}"))?;
             return Ok(WhisperEngine { ctx });
         }
 
@@ -61,11 +63,7 @@ impl WhisperEngine {
             params.set_print_timestamps(false);
 
             // Convert i16 PCM → f32 normalised to [-1.0, 1.0].
-            let samples_f32: Vec<f32> = chunk
-                .samples
-                .iter()
-                .map(|&s| s as f32 / 32768.0)
-                .collect();
+            let samples_f32: Vec<f32> = chunk.samples.iter().map(|&s| s as f32 / 32768.0).collect();
 
             let mut state = self
                 .ctx
@@ -76,7 +74,8 @@ impl WhisperEngine {
                 .full(params, &samples_f32)
                 .map_err(|e| anyhow::anyhow!("Whisper inference failed: {e}"))?;
 
-            let n_segments = state.full_n_segments()
+            let n_segments = state
+                .full_n_segments()
                 .map_err(|e| anyhow::anyhow!("full_n_segments failed: {e}"))?;
 
             let mut text_parts: Vec<String> = Vec::with_capacity(n_segments as usize);

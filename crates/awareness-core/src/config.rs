@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::Args;
+use std::path::{Path, PathBuf};
 
 use crate::backend::BackendKind;
 use crate::config_file::{default_frustration_keywords, default_sharp_apps, ConfigFile};
@@ -117,10 +117,7 @@ impl Config {
         let toml_cfg = {
             let default_paths: Vec<PathBuf> = match args.config.clone() {
                 Some(p) => vec![p],
-                None => vec![
-                    PathBuf::from("config.toml"),
-                    PathBuf::from("./config.toml"),
-                ],
+                None => vec![PathBuf::from("config.toml"), PathBuf::from("./config.toml")],
             };
             let refs: Vec<&Path> = default_paths.iter().map(|p| p.as_path()).collect();
             ConfigFile::load_if_present(&refs)?.unwrap_or_default()
@@ -179,9 +176,7 @@ impl Config {
             .or(gate_tuning.voice_cooldown_seconds)
             .unwrap_or(5);
 
-        let gate_app_time_threshold_minutes = gate_tuning
-            .app_time_threshold_minutes
-            .unwrap_or(25);
+        let gate_app_time_threshold_minutes = gate_tuning.app_time_threshold_minutes.unwrap_or(25);
 
         let gate_frustration_keywords = toml_cfg
             .gate
@@ -209,27 +204,41 @@ impl Config {
             .or(toml_cfg.runtime.transcript_window_size)
             .unwrap_or(5);
 
-        let tts_enabled = args
-            .tts_enabled
-            .or(toml_cfg.tts.enabled)
-            .unwrap_or(true);
+        let tts_enabled = args.tts_enabled.or(toml_cfg.tts.enabled).unwrap_or(true);
 
-        let tts_command = args
-            .tts_command
-            .or_else(|| toml_cfg.tts.command.clone());
+        let tts_command = args.tts_command.or_else(|| toml_cfg.tts.command.clone());
 
         let a11y_script = args
             .a11y_script
             .or_else(|| env_parsed::<PathBuf>("AWARENESS_A11Y_SCRIPT"))
-            .unwrap_or_else(|| PathBuf::from("../../scripts/a11y_dump.py"));
+            .unwrap_or_else(|| {
+                // Resolve `a11y_dump.py` by walking a small list of common
+                // cwd-relative layouts. Previously the default was only
+                // `../../scripts/a11y_dump.py` (correct when run from
+                // `crates/awareness-cli/`) so anyone invoking the binary
+                // from the workspace root never hit the a11y path — it
+                // silently fell back to OCR on every tick.
+                const CANDIDATES: &[&str] = &[
+                    "scripts/a11y_dump.py",
+                    "../scripts/a11y_dump.py",
+                    "../../scripts/a11y_dump.py",
+                ];
+                CANDIDATES
+                    .iter()
+                    .map(PathBuf::from)
+                    .find(|p| p.exists())
+                    .unwrap_or_else(|| PathBuf::from("scripts/a11y_dump.py"))
+            });
 
         let backend = args
             .backend
-            .or_else(|| match std::env::var("AWARENESS_BACKEND").ok().as_deref() {
-                Some("text") | Some("Text") => Some(BackendKind::Text),
-                Some("vision") | Some("Vision") => Some(BackendKind::Vision),
-                _ => None,
-            })
+            .or_else(
+                || match std::env::var("AWARENESS_BACKEND").ok().as_deref() {
+                    Some("text") | Some("Text") => Some(BackendKind::Text),
+                    Some("vision") | Some("Vision") => Some(BackendKind::Vision),
+                    _ => None,
+                },
+            )
             .unwrap_or(BackendKind::Vision);
 
         let cfg = Self {
@@ -297,9 +306,7 @@ impl Config {
             );
         }
         if self.gate_text_new_words_threshold == 0 {
-            tracing::warn!(
-                "gate_text_new_words_threshold=0 disables the text_changed rule"
-            );
+            tracing::warn!("gate_text_new_words_threshold=0 disables the text_changed rule");
         }
         if !(0.0..=1.0).contains(&self.text_dedup_similarity) {
             anyhow::bail!("text_dedup_similarity must be in [0, 1]");
@@ -368,7 +375,12 @@ mod tests {
 
     fn tmp_output_dir(tag: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();
-        dir.push(format!("awareness-cfg-{}-{}-{}", std::process::id(), tag, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        dir.push(format!(
+            "awareness-cfg-{}-{}-{}",
+            std::process::id(),
+            tag,
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -450,7 +462,8 @@ mod tests {
         newpath.push("nested/child/dir");
         cfg.output_dir = newpath.clone();
         assert!(!newpath.exists());
-        cfg.validate().expect("validate should create nested output_dir");
+        cfg.validate()
+            .expect("validate should create nested output_dir");
         assert!(newpath.exists());
     }
 
@@ -459,7 +472,8 @@ mod tests {
         // Missing a11y script should only warn, not error (OCR fallback).
         let mut cfg = valid_config();
         cfg.a11y_script = PathBuf::from("/nonexistent/definitely/a11y.py");
-        cfg.validate().expect("missing a11y script must not be fatal");
+        cfg.validate()
+            .expect("missing a11y script must not be fatal");
     }
 
     #[test]
@@ -476,8 +490,10 @@ mod tests {
         assert_eq!(cfg.gate_text_change_cooldown_seconds, 6);
         assert_eq!(cfg.gate_voice_cooldown_seconds, 5);
         assert_eq!(cfg.min_send_interval_seconds, 15);
-        assert!(!cfg.gate_frustration_keywords.is_empty(),
-            "frustration keywords must be preloaded");
+        assert!(
+            !cfg.gate_frustration_keywords.is_empty(),
+            "frustration keywords must be preloaded"
+        );
 
         // Inert defaults for Linux-only fields.
         assert!(cfg.whisper_model_path.as_os_str().is_empty());
@@ -486,4 +502,3 @@ mod tests {
         assert!(!cfg.tts_enabled);
     }
 }
-

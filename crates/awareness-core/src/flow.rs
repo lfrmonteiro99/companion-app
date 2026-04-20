@@ -66,11 +66,7 @@ impl FlowState {
             self.app_stable_since,
             Some(t) if t.elapsed() >= STABLE_THRESHOLD
         );
-        let focus_app = self
-            .last_app
-            .as_deref()
-            .map(is_focus_app)
-            .unwrap_or(false);
+        let focus_app = self.last_app.as_deref().map(is_focus_app).unwrap_or(false);
         stable_long_enough && focus_app
     }
 }

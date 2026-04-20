@@ -13,6 +13,11 @@ pub struct ScreenFrame {
     pub image: DynamicImage,
     /// 0 when img_hash feature not enabled.
     pub perceptual_hash: u64,
+    /// Native capture size before the 1280x720 resize, in screen pixels.
+    /// `Some` only for full-screen captures (portal). `None` for window-only
+    /// captures (sidecar gnome-screenshot -w) where the a11y bounding box
+    /// wouldn't be meaningful. Used to map a11y bbox → `image` coordinates.
+    pub native_size: Option<(u32, u32)>,
 }
 
 /// Returns true if the hash distance is below threshold (frames are similar).
@@ -40,26 +45,84 @@ pub async fn spawn_screen_capture(
 }
 
 async fn capture_loop(tx: mpsc::Sender<ScreenFrame>, cfg: Arc<Config>) {
+    // Preferred path: xdg-desktop-portal Screenshot (ashpd). On GNOME 46 this
+    // is dispatched straight to Mutter's internal screenshot API: silent, no
+    // flash, no per-tick dialog, ~1.2s per capture. Crucially it sidesteps
+    // the PipeWire ScreenCast DmaBuf problem that left `data.data() == None`
+    // on every buffer.
+    //
+    // `AWARENESS_USE_PIPEWIRE=1` force-enables the (currently broken on
+    // Mutter) PipeWire path for debugging. `AWARENESS_USE_PORTAL=0` skips
+    // both portal paths and goes straight to the sidecar (noisy but reliable
+    // wherever gnome-screenshot / grim works).
     #[cfg(feature = "portal")]
     {
-        use crate::capture_portal::{self, PortalError};
-        match capture_portal::run(tx.clone(), cfg.clone()).await {
-            Ok(()) => return,
-            Err(PortalError::UserCancelled) => {
-                tracing::warn!("Portal permission declined — falling back to sidecar. \
-                    Screenshots will be visible (flash/beep on GNOME). \
-                    Re-run and accept the dialog to restore silent capture.");
+        let portal_allowed = std::env::var("AWARENESS_USE_PORTAL")
+            .map(|v| v != "0" && !v.is_empty())
+            .unwrap_or(true);
+
+        if portal_allowed {
+            // 1. ScreenCast portal + PipeWire stream. TRUE silent: Mutter
+            //    treats this as a continuous video capture, no per-frame
+            //    shutter sound, no flash. `param_changed` now publishes
+            //    ParamBuffers + ParamMeta(Header) + ParamMeta(VideoTransform)
+            //    via stream.update_params — the handshake Mutter requires to
+            //    actually deliver CPU-mappable buffers.
+            let use_pipewire = std::env::var("AWARENESS_USE_PIPEWIRE")
+                .map(|v| v != "0" && !v.is_empty())
+                .unwrap_or(true);
+            if use_pipewire {
+                use crate::capture_portal::{self, PortalError};
+                tracing::info!("capture: trying xdg-desktop-portal ScreenCast (silent)");
+                match capture_portal::run(tx.clone(), cfg.clone()).await {
+                    Ok(()) => return,
+                    Err(PortalError::UserCancelled) => {
+                        tracing::warn!(
+                            "ScreenCast permission declined — trying Screenshot portal next."
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "ScreenCast failed: {e}. Trying Screenshot portal next."
+                        );
+                    }
+                }
             }
-            Err(PortalError::NoPortal(msg)) => {
-                tracing::info!("No xdg-desktop-portal detected ({msg}) — using sidecar.");
+
+            // 2. Screenshot portal via ashpd. NOT truly silent on GNOME —
+            //    Mutter still emits the shutter sound because this hits the
+            //    per-shot screenshot API. Kept as a fallback for hosts
+            //    where ScreenCast is broken, with the audible trade-off
+            //    documented. Set AWARENESS_USE_SCREENSHOT=0 to skip.
+            let use_screenshot = std::env::var("AWARENESS_USE_SCREENSHOT")
+                .map(|v| v != "0" && !v.is_empty())
+                .unwrap_or(true);
+            if use_screenshot {
+                use crate::capture_screenshot::{self, ScreenshotError};
+                tracing::warn!(
+                    "capture: Screenshot portal active (per-tick shutter sound on GNOME)"
+                );
+                match capture_screenshot::run(tx.clone(), cfg.clone()).await {
+                    Ok(()) => return,
+                    Err(ScreenshotError::PortalUnavailable(msg)) => {
+                        tracing::info!("Screenshot portal unavailable ({msg}) — using sidecar.");
+                    }
+                    Err(ScreenshotError::Denied) => {
+                        tracing::warn!(
+                            "Screenshot portal declined on the first call — using sidecar."
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("Screenshot portal failed: {e}. Falling back to sidecar.");
+                    }
+                }
             }
-            Err(e) => {
-                tracing::warn!("Portal capture failed: {e}. Falling back to sidecar.");
-            }
+        } else {
+            tracing::info!("capture: AWARENESS_USE_PORTAL=0 — skipping portal");
         }
     }
 
-    // Sidecar path: always compiled.
+    tracing::info!("capture: using sidecar (gnome-screenshot / grim)");
     sidecar_capture_loop(tx, cfg).await;
 }
 
@@ -140,7 +203,9 @@ fn is_command_not_found(e: &std::io::Error) -> bool {
     e.kind() == std::io::ErrorKind::NotFound
 }
 
-fn build_frame(bytes: Vec<u8>) -> Result<ScreenFrame> {
+/// Decode a PNG/JPEG byte buffer into a `ScreenFrame` with a real perceptual
+/// hash. Public so the portal Screenshot path can reuse it.
+pub fn build_frame(bytes: Vec<u8>) -> Result<ScreenFrame> {
     use image::imageops::FilterType;
 
     let img = image::load_from_memory(&bytes)?;
@@ -152,24 +217,27 @@ fn build_frame(bytes: Vec<u8>) -> Result<ScreenFrame> {
         captured_at: Utc::now(),
         image: resized,
         perceptual_hash: hash,
+        // Sidecar (gnome-screenshot -w) captures the window, not the whole
+        // screen — a11y bbox (screen coords) doesn't apply here.
+        native_size: None,
     })
 }
 
-#[cfg(feature = "full")]
-fn compute_hash(img: &DynamicImage) -> u64 {
-    // Simple dHash: resize to 9x8, compare adjacent pixels per row → 64 bits.
+/// dHash: resize to 9x8 greyscale, compare adjacent pixels per row → 64 bits.
+/// Must be feature-agnostic: the dedup layer drops every frame after the
+/// first when every hash collides to 0, which is what happened historically
+/// under `--features "portal ocr"` (no `full`).
+pub fn compute_hash(img: &DynamicImage) -> u64 {
     use image::imageops::{resize, FilterType};
-    use image::GrayImage;
 
-    let small = resize(img, 9, 8, FilterType::Triangle);
-    let gray = image::DynamicImage::ImageRgba8(small).to_luma8();
+    let small = resize(&img.to_luma8(), 9, 8, FilterType::Triangle);
 
     let mut hash = 0u64;
     let mut bit = 0u64;
     for y in 0..8u32 {
         for x in 0..8u32 {
-            let left  = gray.get_pixel(x, y)[0];
-            let right = gray.get_pixel(x + 1, y)[0];
+            let left = small.get_pixel(x, y)[0];
+            let right = small.get_pixel(x + 1, y)[0];
             if left > right {
                 hash |= 1 << bit;
             }
@@ -177,9 +245,4 @@ fn compute_hash(img: &DynamicImage) -> u64 {
         }
     }
     hash
-}
-
-#[cfg(not(feature = "full"))]
-fn compute_hash(_img: &DynamicImage) -> u64 {
-    0u64
 }

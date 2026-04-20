@@ -22,26 +22,42 @@ impl TtsConfig {
     /// use it. Otherwise probe common backends in priority order.
     pub fn resolve(enabled: bool, override_cmd: Option<&str>) -> Self {
         if !enabled {
-            return Self { enabled: false, command: None };
+            return Self {
+                enabled: false,
+                command: None,
+            };
         }
 
         if let Some(cmd) = override_cmd {
             if binary_exists(cmd) {
-                return Self { enabled: true, command: Some(cmd.to_string()) };
+                return Self {
+                    enabled: true,
+                    command: Some(cmd.to_string()),
+                };
             }
-            tracing::warn!("tts: configured binary {cmd:?} not on PATH; falling back to auto-detect");
+            tracing::warn!(
+                "tts: configured binary {cmd:?} not on PATH; falling back to auto-detect"
+            );
         }
 
         // spd-say is the default on most Linux desktops (speech-dispatcher).
         // espeak-ng/espeak work headless. `say` is macOS built-in.
         for candidate in ["spd-say", "espeak-ng", "espeak", "say"] {
             if binary_exists(candidate) {
-                return Self { enabled: true, command: Some(candidate.to_string()) };
+                return Self {
+                    enabled: true,
+                    command: Some(candidate.to_string()),
+                };
             }
         }
 
-        tracing::warn!("tts: no TTS backend found (spd-say/espeak-ng/espeak/say); audio alerts disabled");
-        Self { enabled: true, command: None }
+        tracing::warn!(
+            "tts: no TTS backend found (spd-say/espeak-ng/espeak/say); audio alerts disabled"
+        );
+        Self {
+            enabled: true,
+            command: None,
+        }
     }
 }
 
@@ -81,7 +97,7 @@ fn shorten_for_tts(text: &str) -> String {
 
     // First sentence — split on the first terminator.
     let end = cleaned
-        .find(|c: char| c == '.' || c == '!' || c == '?')
+        .find(['.', '!', '?'])
         .map(|i| i + 1)
         .unwrap_or(cleaned.len());
     let first = cleaned[..end].trim().to_string();
@@ -149,13 +165,19 @@ mod tests {
 
     #[test]
     fn speak_disabled_noops() {
-        let cfg = TtsConfig { enabled: false, command: Some("echo".into()) };
+        let cfg = TtsConfig {
+            enabled: false,
+            command: Some("echo".into()),
+        };
         speak("hello", &cfg); // must not panic, must not spawn
     }
 
     #[test]
     fn speak_no_command_noops() {
-        let cfg = TtsConfig { enabled: true, command: None };
+        let cfg = TtsConfig {
+            enabled: true,
+            command: None,
+        };
         speak("hello", &cfg);
     }
 

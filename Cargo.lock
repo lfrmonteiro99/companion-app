@@ -384,6 +384,7 @@ dependencies = [
  "dotenvy",
  "image",
  "leptess",
+ "libc",
  "num_cpus",
  "pipewire",
  "pretty_assertions",

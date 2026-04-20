@@ -7,10 +7,10 @@ pub use awareness_core::types::OcrOutput;
 /// Extract text from a screen frame using Tesseract OCR.
 #[allow(dead_code)]
 pub fn extract_text(image: &DynamicImage, captured_at: DateTime<Utc>) -> Result<OcrOutput> {
-    #[cfg(feature = "full")]
+    #[cfg(feature = "ocr")]
     {
-        use leptess::LepTess;
         use image::imageops::{grayscale, FilterType};
+        use leptess::LepTess;
 
         // Preprocess: grayscale + 2x upscale. Modern UI fonts (Segoe UI,
         // Roboto) with sub-pixel rendering defeat tesseract at native
@@ -38,7 +38,8 @@ pub fn extract_text(image: &DynamicImage, captured_at: DateTime<Utc>) -> Result<
         // non-linear layouts (chat bubbles, menus, side panels).
         lt.set_variable(leptess::Variable::TesseditPagesegMode, "11")
             .map_err(|e| anyhow::anyhow!("set PSM failed: {e}"))?;
-        let full_text = lt.get_utf8_text()
+        let full_text = lt
+            .get_utf8_text()
             .map_err(|e| anyhow::anyhow!("get_utf8_text failed: {e}"))?;
 
         // Title bar: take top 10% of the (upscaled) image.
@@ -53,22 +54,24 @@ pub fn extract_text(image: &DynamicImage, captured_at: DateTime<Utc>) -> Result<
             .map_err(|e| anyhow::anyhow!("Failed to encode title bar image: {e}"))?;
         lt2.set_image_from_mem(buf2.get_ref())
             .map_err(|e| anyhow::anyhow!("set_image_from_mem (title bar) failed: {e}"))?;
-        let title_bar_text = lt2.get_utf8_text()
+        let title_bar_text = lt2
+            .get_utf8_text()
             .map_err(|e| anyhow::anyhow!("get_utf8_text (title bar) failed: {e}"))?;
 
         // Use full_text as fallback for app name since title bar OCR can miss it.
-        let inferred_app_name = infer_app_name(&title_bar_text)
-            .or_else(|| infer_app_name(&full_text));
+        let inferred_app_name =
+            infer_app_name(&title_bar_text).or_else(|| infer_app_name(&full_text));
 
         return Ok(OcrOutput {
             captured_at,
             full_text,
             title_bar_text,
             inferred_app_name,
+            active_bbox: None,
         });
     }
 
-    #[cfg(not(feature = "full"))]
+    #[cfg(not(feature = "ocr"))]
     {
         let _ = image; // suppress unused warning
         Ok(OcrOutput {
@@ -76,6 +79,7 @@ pub fn extract_text(image: &DynamicImage, captured_at: DateTime<Utc>) -> Result<
             full_text: String::new(),
             title_bar_text: String::new(),
             inferred_app_name: None,
+            active_bbox: None,
         })
     }
 }

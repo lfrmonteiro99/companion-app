@@ -18,22 +18,31 @@ pub struct MemoryRing {
 
 impl MemoryRing {
     pub fn new(capacity: usize) -> Self {
-        Self { buf: VecDeque::with_capacity(capacity), capacity }
+        Self {
+            buf: VecDeque::with_capacity(capacity),
+            capacity,
+        }
     }
     pub fn push(&mut self, e: MemoryEntry) {
-        if self.buf.len() == self.capacity { self.buf.pop_front(); }
+        if self.buf.len() == self.capacity {
+            self.buf.pop_front();
+        }
         self.buf.push_back(e);
     }
     /// Oldest first, newest last. Empty string when ring is empty.
     pub fn to_prompt_lines(&self) -> String {
-        self.buf.iter().map(|e| {
-            let when = e.timestamp.format("%H:%M");
-            let app  = e.app.as_deref().unwrap_or("?");
-            format!(
-                "[{when}] {app} alert={} ({}): {:?}",
-                e.should_alert, e.alert_type, e.quick_message
-            )
-        }).collect::<Vec<_>>().join("\n")
+        self.buf
+            .iter()
+            .map(|e| {
+                let when = e.timestamp.format("%H:%M");
+                let app = e.app.as_deref().unwrap_or("?");
+                format!(
+                    "[{when}] {app} alert={} ({}): {:?}",
+                    e.should_alert, e.alert_type, e.quick_message
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -52,7 +61,9 @@ mod tests {
     #[test]
     fn evicts_oldest_when_full() {
         let mut r = MemoryRing::new(3);
-        for i in 0..5 { r.push(mk(&i.to_string())); }
+        for i in 0..5 {
+            r.push(mk(&i.to_string()));
+        }
         let s = r.to_prompt_lines();
         assert!(s.contains("\"2\"") && s.contains("\"3\"") && s.contains("\"4\""));
         assert!(!s.contains("\"0\"") && !s.contains("\"1\""));
@@ -87,8 +98,14 @@ mod tests {
     #[test]
     fn to_prompt_lines_yields_one_line_per_entry() {
         let mut r = MemoryRing::new(5);
-        for i in 0..3 { r.push(mk(&i.to_string())); }
+        for i in 0..3 {
+            r.push(mk(&i.to_string()));
+        }
         let s = r.to_prompt_lines();
-        assert_eq!(s.lines().count(), 3, "expected one line per entry, got {s:?}");
+        assert_eq!(
+            s.lines().count(),
+            3,
+            "expected one line per entry, got {s:?}"
+        );
     }
 }

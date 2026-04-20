@@ -54,10 +54,7 @@ fn state_slot() -> &'static Mutex<Option<CoreState>> {
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_companion_awareness_CoreBridge_init(
-    _env: JNIEnv,
-    _class: JClass,
-) {
+pub extern "system" fn Java_com_companion_awareness_CoreBridge_init(_env: JNIEnv, _class: JClass) {
     android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Info)
@@ -208,7 +205,8 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
             if let Err(over) = state.budget.try_spend(response.cost_usd) {
                 log::warn!(
                     "budget tipped over while deducting call cost: spent ${:.4} of ${:.4}",
-                    over.spent, over.limit,
+                    over.spent,
+                    over.limit,
                 );
             }
             if response.should_alert && response.parse_error.is_none() {

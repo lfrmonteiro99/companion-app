@@ -1,7 +1,7 @@
+use crate::config::Config;
+use crate::types::ContextEvent;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use crate::types::ContextEvent;
-use crate::config::Config;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateDecision {
@@ -33,15 +33,14 @@ pub struct GateState {
 fn new_words_count(current: &str, previous: &str) -> usize {
     use std::collections::HashSet;
     let prev: HashSet<&str> = previous.split_whitespace().collect();
-    current.split_whitespace().filter(|w| !prev.contains(w)).count()
+    current
+        .split_whitespace()
+        .filter(|w| !prev.contains(w))
+        .count()
 }
 
 /// Pure function: given event + state + config → decision + updated state.
-pub fn evaluate(
-    event: &ContextEvent,
-    state: &mut GateState,
-    cfg: &Config,
-) -> GateDecision {
+pub fn evaluate(event: &ContextEvent, state: &mut GateState, cfg: &Config) -> GateDecision {
     // Rule 1: App changed.
     if event.app != state.last_app {
         state.last_app = event.app.clone();
@@ -71,13 +70,10 @@ pub fn evaluate(
         .unwrap_or("")
         .to_lowercase();
     let screen_lower = event.screen_text_excerpt.to_lowercase();
-    let has_frustration = cfg
-        .gate_frustration_keywords
-        .iter()
-        .any(|kw| {
-            let kw_lower = kw.to_lowercase();
-            mic_lower.contains(&kw_lower) || screen_lower.contains(&kw_lower)
-        });
+    let has_frustration = cfg.gate_frustration_keywords.iter().any(|kw| {
+        let kw_lower = kw.to_lowercase();
+        mic_lower.contains(&kw_lower) || screen_lower.contains(&kw_lower)
+    });
 
     if has_frustration {
         state.last_sent_at = Some(Utc::now());
@@ -131,7 +127,12 @@ pub fn evaluate(
     // the voice-specific cooldown has elapsed — keeps conversational alerts
     // responsive without spamming the API on every whisper chunk.
     if event.mic_text_new
-        && !event.mic_text_recent.as_deref().unwrap_or("").trim().is_empty()
+        && !event
+            .mic_text_recent
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
     {
         let voice_cooldown = Duration::seconds(cfg.gate_voice_cooldown_seconds as i64);
         let voice_cooldown_elapsed = match state.last_voice_send {
@@ -262,7 +263,7 @@ mod tests {
         };
         let mut event = make_event();
         event.duration_on_app_seconds = 0; // below threshold
-        // No frustration keywords
+                                           // No frustration keywords
         let decision = evaluate(&event, &mut state, &cfg);
         assert_eq!(decision.action, GateAction::Skip);
         assert_eq!(decision.reason, "no_trigger");

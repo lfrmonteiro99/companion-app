@@ -6,7 +6,6 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use awareness_cli::a11y;
 use awareness_cli::aggregator;
-use awareness_core::types::{ContextEvent, FilterResponse};
 use awareness_cli::audio;
 use awareness_cli::backend::Backend;
 use awareness_cli::budget::BudgetController;
@@ -21,6 +20,7 @@ use awareness_cli::memory::{MemoryEntry, MemoryRing};
 use awareness_cli::ocr;
 use awareness_cli::tts::TtsConfig;
 use awareness_cli::whisper::WhisperEngine;
+use awareness_core::types::{ContextEvent, FilterResponse};
 
 #[derive(Parser)]
 #[command(name = "awareness-cli", version, about = "Awareness POC CLI")]
@@ -31,7 +31,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Run(RunArgs),
+    Run(Box<RunArgs>),
     /// Compute go/no-go metrics from a directory of JSONL run logs.
     /// Thin wrapper over scripts/analyze_runs.py (keeps the heavy stats in
     /// Python so the Rust dep tree doesn't balloon).
@@ -71,13 +71,53 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run(args) => run(args).await?,
-        Commands::Analyze { runs_dir, output_md, script } => {
+        Commands::Run(args) => run(*args).await?,
+        Commands::Analyze {
+            runs_dir,
+            output_md,
+            script,
+        } => {
             analyze(runs_dir, output_md, script)?;
         }
     }
 
     Ok(())
+}
+
+/// Crop the resized `ScreenFrame.image` (typically 1280x720) down to the
+/// focused window using the a11y-reported bounding box (in native screen
+/// pixels). Returns `None` when:
+///   - we have no bbox (a11y didn't expose Component),
+///   - the frame is window-only already (sidecar capture),
+///   - the bbox shrinks to near-zero after clamping (off-screen window).
+fn crop_to_active_window(
+    resized: &image::DynamicImage,
+    native_size: Option<(u32, u32)>,
+    bbox: Option<(i32, i32, u32, u32)>,
+) -> Option<image::DynamicImage> {
+    let (nat_w, nat_h) = native_size?;
+    let (bx, by, bw, bh) = bbox?;
+    if nat_w == 0 || nat_h == 0 {
+        return None;
+    }
+    let img_w = resized.width();
+    let img_h = resized.height();
+    let sx = img_w as f32 / nat_w as f32;
+    let sy = img_h as f32 / nat_h as f32;
+    let cx = ((bx.max(0) as f32) * sx) as u32;
+    let cy = ((by.max(0) as f32) * sy) as u32;
+    let cw = ((bw as f32) * sx) as u32;
+    let ch = ((bh as f32) * sy) as u32;
+    let cx = cx.min(img_w);
+    let cy = cy.min(img_h);
+    let cw = cw.min(img_w.saturating_sub(cx));
+    let ch = ch.min(img_h.saturating_sub(cy));
+    // A window crop smaller than a thumbnail is never useful input for
+    // OCR/vision; bail out and let the full frame through.
+    if cw < 64 || ch < 64 {
+        return None;
+    }
+    Some(resized.crop_imm(cx, cy, cw, ch))
 }
 
 /// Resolve the analysis script to an existing path. Tries the given path,
@@ -114,17 +154,13 @@ fn analyze(
     }
 
     let mut cmd = std::process::Command::new("python3");
-    cmd.arg(&script_path)
-        .arg("--runs-dir")
-        .arg(&runs_dir);
+    cmd.arg(&script_path).arg("--runs-dir").arg(&runs_dir);
     if let Some(md) = output_md.as_deref() {
         cmd.arg("--output-md").arg(md);
     }
 
     let status = cmd.status().map_err(|e| {
-        anyhow::anyhow!(
-            "failed to launch python3 (install python3 or pass --script): {e}"
-        )
+        anyhow::anyhow!("failed to launch python3 (install python3 or pass --script): {e}")
     })?;
 
     if !status.success() {
@@ -187,7 +223,10 @@ async fn process_send(
     let img_ref: Option<&[u8]> = img_bytes.as_deref().map(|v| v.as_slice());
     let mem_str = memory.lock().await.to_prompt_lines();
 
-    let resp = match backend.analyze(event, img_ref, &mem_str, &decision.reason).await {
+    let resp = match backend
+        .analyze(event, img_ref, &mem_str, &decision.reason)
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("API: {e}");
@@ -211,7 +250,8 @@ async fn process_send(
             // this alert is dispatched (the user just paid for it).
             tracing::error!(
                 "Daily budget exceeded after commit: ${:.4} of ${:.4} — exiting",
-                b.spent(), cfg.budget_usd_daily
+                b.spent(),
+                cfg.budget_usd_daily
             );
             b.flush();
             println!("\nBudget cap reached. Exiting.");
@@ -222,20 +262,25 @@ async fn process_send(
     // If the model's JSON failed to parse, cost was still spent but the
     // response carries no signal — log, skip alert dispatch and memory.
     if let Some(msg) = &resp.parse_error {
-        tracing::error!(
-            "tick={tick_id} API returned unparseable JSON: {msg}; skipping alert"
-        );
+        tracing::error!("tick={tick_id} API returned unparseable JSON: {msg}; skipping alert");
         return (Some(resp), Some(ms));
     }
 
-    // Force alert when gate fires emotional — user asked for commentary
-    // whenever frustration keywords hit, regardless of the model's verdict.
-    let force_alert = decision.reason == "emotional";
+    // Force alert ONLY when the user's intent is unambiguous and the gate
+    // rule itself carries signal the model can't silently discard:
+    //   - `emotional`: frustration keyword in screen/mic → user wants commentary.
+    //   - `voice_activity`: user spoke → expects a reply.
+    // For every other gate reason we trust the model's `should_alert`
+    // verdict. Previously we forced delivery for all rules and ended up
+    // spamming "Ecrã mostra várias aplicações..." fallback messages the
+    // model emitted precisely because it decided there was nothing useful
+    // to say.
+    let force_alert = matches!(decision.reason.as_str(), "emotional" | "voice_activity");
     let mut resp = resp;
     if force_alert && !resp.should_alert {
         resp.should_alert = true;
         if resp.alert_type == "none" {
-            resp.alert_type = "emotional".to_string();
+            resp.alert_type = decision.reason.clone();
         }
     }
     if resp.should_alert && resp.quick_message.trim().is_empty() {
@@ -254,19 +299,36 @@ async fn process_send(
         let b = budget.lock().await;
         tracing::info!(
             "tick={tick_id} alert={} type={} cost=${:.6} left=${:.4} msg={:?}",
-            resp.should_alert, resp.alert_type,
-            resp.cost_usd, b.remaining(),
+            resp.should_alert,
+            resp.alert_type,
+            resp.cost_usd,
+            b.remaining(),
             resp.quick_message,
         );
     }
 
-    memory.lock().await.push(MemoryEntry {
-        timestamp: chrono::Utc::now(),
-        app: event.app.clone(),
-        alert_type: resp.alert_type.clone(),
-        should_alert: resp.should_alert,
-        quick_message: resp.quick_message.clone(),
-    });
+    // Only remember alerts that actually fired. Stashing every
+    // should_alert=false response floods the ring with the model's
+    // low-signal fallback phrases ("Ecrã mostra várias aplicações..."),
+    // and the next call's prompt passes those back in as "Histórico
+    // recente" — the model then quotes them into its next quick_message
+    // instead of reading the current screen. The prompt already forbids
+    // citing memory, but curbing the source is more reliable than
+    // asking the model not to.
+    if resp.should_alert {
+        let trimmed: String = resp
+            .quick_message
+            .chars()
+            .take(80)
+            .collect::<String>();
+        memory.lock().await.push(MemoryEntry {
+            timestamp: chrono::Utc::now(),
+            app: event.app.clone(),
+            alert_type: resp.alert_type.clone(),
+            should_alert: true,
+            quick_message: trimmed,
+        });
+    }
 
     if resp.should_alert {
         let in_flow = flow_state.lock().await.in_flow();
@@ -328,10 +390,7 @@ async fn run(args: RunArgs) -> Result<()> {
         log_path,
         filter_source,
     );
-    tracing::info!(
-        "features: full={}",
-        cfg!(feature = "full"),
-    );
+    tracing::info!("features: full={}", cfg!(feature = "full"),);
 
     // One-time, non-fatal: ensure Chromium/Electron launchers pass
     // --force-renderer-accessibility so AT-SPI sees their content.
@@ -390,14 +449,33 @@ async fn run(args: RunArgs) -> Result<()> {
                     continue;
                 }
 
-                // Cache PNG bytes for the vision backend. Encoding is CPU-bound
-                // so we run it in spawn_blocking — but we AWAIT the result
-                // before continuing to avoid a race where the gate fires Send
-                // before the first PNG is ready (tick 2 bug: "vision backend
-                // called without image"). Encoding costs ~100-300 ms per
-                // frame, negligible vs the ~1.5 s a11y query that follows.
+                // Query a11y FIRST so we can crop the frame to the active
+                // window's bounding box before encoding the PNG / running
+                // OCR. Three outcomes:
+                //   Rich → structured text, skip OCR.
+                //   Thin → we at least have the active window's bbox (VS
+                //          Code Monaco, Electron canvas, ...) → crop and
+                //          run OCR on the focused region.
+                //   None → full-frame OCR as last resort.
+                let a11y_result = a11y::try_snapshot(&a11y_script, frame.captured_at, 80, 6)
+                    .await
+                    .unwrap_or(a11y::A11yResult::None);
+
+                let bbox = match &a11y_result {
+                    a11y::A11yResult::Rich(o) => o.active_bbox,
+                    a11y::A11yResult::Thin(h) => h.active_bbox,
+                    a11y::A11yResult::None => None,
+                };
+                let focused_image =
+                    crop_to_active_window(&frame.image, frame.native_size, bbox);
+
+                // Cache PNG bytes for the vision backend. Encoded from the
+                // focused image when available so gpt-4o-mini vision sees
+                // the window instead of desktop confetti.
                 if cache_image {
-                    let img = frame.image.clone();
+                    let img = focused_image
+                        .clone()
+                        .unwrap_or_else(|| frame.image.clone());
                     if let Ok(Some(bytes)) = tokio::task::spawn_blocking(move || {
                         let mut buf = std::io::Cursor::new(Vec::new());
                         img.write_to(&mut buf, image::ImageFormat::Png)
@@ -410,25 +488,41 @@ async fn run(args: RunArgs) -> Result<()> {
                     }
                 }
 
-                let a11y_out = a11y::try_snapshot(&a11y_script, frame.captured_at, 80, 6)
-                    .await
-                    .unwrap_or(None);
-
-                let (out, src) = match a11y_out {
-                    Some(out) => (out, "a11y"),
-                    None => match ocr::extract_text(&frame.image, frame.captured_at) {
-                        Ok(out) => (out, "ocr"),
-                        Err(e) => {
-                            tracing::warn!("OCR: {e}");
-                            continue;
+                let (out, src) = match a11y_result {
+                    a11y::A11yResult::Rich(out) => (out, "a11y"),
+                    other => {
+                        // Thin or None — OCR the cropped region when we
+                        // have one. In the Thin case, inherit app/title
+                        // from the hint so the event carries the correct
+                        // window identity even though OCR generated the
+                        // text.
+                        let ocr_input = focused_image.as_ref().unwrap_or(&frame.image);
+                        match ocr::extract_text(ocr_input, frame.captured_at) {
+                            Ok(mut out) => {
+                                if let a11y::A11yResult::Thin(hint) = other {
+                                    out.inferred_app_name = hint
+                                        .inferred_app_name
+                                        .or(out.inferred_app_name);
+                                    if !hint.title.is_empty() {
+                                        out.title_bar_text = hint.title;
+                                    }
+                                    out.active_bbox = out.active_bbox.or(bbox);
+                                }
+                                (out, "ocr")
+                            }
+                            Err(e) => {
+                                tracing::warn!("OCR: {e}");
+                                continue;
+                            }
                         }
-                    },
+                    }
                 };
 
                 tracing::info!(
-                    "extract src={src} app={:?} chars={}",
+                    "extract src={src} app={:?} chars={} cropped={}",
                     out.inferred_app_name,
-                    out.full_text.chars().count()
+                    out.full_text.chars().count(),
+                    focused_image.is_some(),
                 );
 
                 if tdedup.should_keep(&out.full_text) {
@@ -444,8 +538,7 @@ async fn run(args: RunArgs) -> Result<()> {
         tokio::spawn(async move {
             while let Some(chunk) = mic_rx.recv().await {
                 let w = whisper.clone();
-                let result =
-                    tokio::task::spawn_blocking(move || w.transcribe(&chunk)).await;
+                let result = tokio::task::spawn_blocking(move || w.transcribe(&chunk)).await;
                 match result {
                     Ok(Ok(t)) if !t.text.is_empty() => {
                         let _ = transcript_tx.send(t).await;
@@ -482,7 +575,10 @@ async fn run(args: RunArgs) -> Result<()> {
     let backend = Backend::new(cfg.backend, &cfg)?;
     tracing::info!("analysis backend: {}", backend.label());
 
-    let memory = Arc::new(Mutex::new(MemoryRing::new(10)));
+    // Capacity 4: enough history to detect "same thing still visible, don't
+    // re-alert", small enough that the model can't lean on it as a substitute
+    // for reading the current frame.
+    let memory = Arc::new(Mutex::new(MemoryRing::new(4)));
 
     // Flow-state detector — suppresses low/medium urgency notifications
     // while the user is deep-focused in an editor/terminal for several minutes.

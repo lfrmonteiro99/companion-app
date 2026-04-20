@@ -70,11 +70,10 @@ fn run() -> Result<()> {
             None => continue,
         };
 
-        let content = fs::read_to_string(&src)
-            .with_context(|| format!("read {}", src.display()))?;
+        let content =
+            fs::read_to_string(&src).with_context(|| format!("read {}", src.display()))?;
         let patched = inject_flag(&content);
-        fs::write(&dest, patched)
-            .with_context(|| format!("write {}", dest.display()))?;
+        fs::write(&dest, patched).with_context(|| format!("write {}", dest.display()))?;
         tracing::info!("a11y setup: wrapped {} → {:?}", name, dest);
         wrapped.push(name.to_string());
     }
@@ -164,7 +163,9 @@ mod tests {
     fn inject_flag_preserves_field_codes() {
         let input = "Exec=/usr/bin/google-chrome-stable %U\n";
         let out = inject_flag(input);
-        assert!(out.contains("Exec=/usr/bin/google-chrome-stable --force-renderer-accessibility %U"));
+        assert!(
+            out.contains("Exec=/usr/bin/google-chrome-stable --force-renderer-accessibility %U")
+        );
     }
 
     #[test]

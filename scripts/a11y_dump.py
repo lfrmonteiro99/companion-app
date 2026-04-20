@@ -30,6 +30,26 @@ except ImportError:
     sys.exit(0)
 
 
+def _window_bbox(win: Any) -> Optional[Tuple[int, int, int, int]]:
+    """Return (x, y, width, height) of the window in screen coordinates, or
+    None if the Component interface / extents aren't exposed."""
+    try:
+        comp = win.queryComponent()
+    except (NotImplementedError, RuntimeError, AttributeError):
+        return None
+    try:
+        ext = comp.getExtents(pyatspi.DESKTOP_COORDS)  # type: ignore[attr-defined]
+    except (NotImplementedError, RuntimeError, AttributeError):
+        return None
+    try:
+        x, y, w, h = int(ext.x), int(ext.y), int(ext.width), int(ext.height)
+    except (AttributeError, TypeError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return (x, y, w, h)
+
+
 def _xprop_topmost_title() -> Optional[str]:
     """
     GNOME Wayland doesn't populate _NET_ACTIVE_WINDOW, but it does maintain
@@ -275,6 +295,7 @@ def main() -> None:
 
     try:
         title = win.name or ""
+        bbox = _window_bbox(win)
         parts = collect_text(win)
         seen: set[str] = set()
         unique: List[str] = []
@@ -283,12 +304,21 @@ def main() -> None:
                 seen.add(p)
                 unique.append(p)
         text = "\n".join(unique)
-        print(json.dumps({
+        payload: dict[str, Any] = {
             "app": app_name,
             "title": title,
             "text": text,
             "nodes": len(unique),
-        }))
+        }
+        if bbox is not None:
+            payload["bbox"] = list(bbox)
+        # When the subtree is thin (e.g. VS Code Monaco editor, most Electron
+        # apps whose inner content is rendered to a canvas), the caller can
+        # still use `bbox` to crop the screenshot before running OCR. Mark
+        # the thin state explicitly so the Rust side knows to fall through
+        # to OCR but keep the bbox.
+        payload["thin"] = len(unique) == 0 or len(text) < 40
+        print(json.dumps(payload))
     except (RuntimeError, AttributeError, OSError) as e:
         print(json.dumps({"error": str(e)}))
 

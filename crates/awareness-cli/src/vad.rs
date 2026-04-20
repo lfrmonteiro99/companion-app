@@ -41,9 +41,7 @@ impl VadDetector {
             if frame.len() != VAD_FRAME_SAMPLES {
                 return false;
             }
-            self.inner
-                .is_voice_segment(frame)
-                .unwrap_or(false)
+            self.inner.is_voice_segment(frame).unwrap_or(false)
         }
 
         #[cfg(not(feature = "full"))]

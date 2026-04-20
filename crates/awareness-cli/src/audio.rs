@@ -3,6 +3,9 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+#[cfg(feature = "audio")]
+use chrono::{DateTime, Utc};
+
 use crate::config::Config;
 
 pub use awareness_core::types::AudioChunk;
@@ -111,7 +114,9 @@ async fn spawn_mic_capture_full(tx: mpsc::Sender<AudioChunk>) -> Result<JoinHand
     ready_rx.recv()??;
 
     let handle = tokio::spawn(async {
-        loop { tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await; }
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+        }
     });
     Ok(handle)
 }

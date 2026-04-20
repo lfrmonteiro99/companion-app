@@ -1,9 +1,9 @@
+use crate::config::Config;
+use crate::types::{ContextEvent, FilterResponse};
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use crate::types::{ContextEvent, FilterResponse};
-use crate::config::Config;
 
 // ── Internal request / response structs ──────────────────────────────────────
 
@@ -194,8 +194,8 @@ impl OpenAiClient {
     }
 
     pub async fn filter_call(&self, event: &ContextEvent, memory: &str) -> Result<FilterResponse> {
-        let event_json = serde_json::to_string(event)
-            .context("failed to serialise ContextEvent")?;
+        let event_json =
+            serde_json::to_string(event).context("failed to serialise ContextEvent")?;
         let user_content = if memory.is_empty() {
             event_json
         } else {
@@ -339,14 +339,20 @@ mod tests {
         let r = sample(None);
         let s = serde_json::to_string(&r).unwrap();
         // skip_serializing_if = "Option::is_none" must drop the field entirely.
-        assert!(!s.contains("parse_error"), "serialized JSON should omit parse_error: {s}");
+        assert!(
+            !s.contains("parse_error"),
+            "serialized JSON should omit parse_error: {s}"
+        );
     }
 
     #[test]
     fn parse_error_present_when_some() {
         let r = sample(Some("schema mismatch".into()));
         let s = serde_json::to_string(&r).unwrap();
-        assert!(s.contains("parse_error"), "JSON must contain parse_error field: {s}");
+        assert!(
+            s.contains("parse_error"),
+            "JSON must contain parse_error field: {s}"
+        );
         assert!(s.contains("schema mismatch"));
     }
 
@@ -363,8 +369,7 @@ mod tests {
     #[test]
     fn with_api_key_builds_client_without_full_config() {
         // Android frontend path: no Config struct, just an API key.
-        let client = OpenAiClient::with_api_key("sk-dummy".into())
-            .expect("client must build");
+        let client = OpenAiClient::with_api_key("sk-dummy".into()).expect("client must build");
         assert_eq!(client.api_key, "sk-dummy");
     }
 

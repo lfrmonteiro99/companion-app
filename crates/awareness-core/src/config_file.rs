@@ -54,8 +54,19 @@ pub struct VisionSection {
 
 pub fn default_sharp_apps() -> Vec<String> {
     [
-        "vscode", "cursor", "code", "intellij", "pycharm", "webstorm",
-        "sublime", "atom", "nvim", "neovim", "text_editor", "helix", "zed",
+        "vscode",
+        "cursor",
+        "code",
+        "intellij",
+        "pycharm",
+        "webstorm",
+        "sublime",
+        "atom",
+        "nvim",
+        "neovim",
+        "text_editor",
+        "helix",
+        "zed",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -66,10 +77,10 @@ impl ConfigFile {
     pub fn load_if_present(candidates: &[&Path]) -> Result<Option<Self>> {
         for path in candidates {
             if path.exists() {
-                let raw = std::fs::read_to_string(path)
-                    .with_context(|| format!("reading {:?}", path))?;
-                let parsed: ConfigFile = toml::from_str(&raw)
-                    .with_context(|| format!("parsing {:?}", path))?;
+                let raw =
+                    std::fs::read_to_string(path).with_context(|| format!("reading {:?}", path))?;
+                let parsed: ConfigFile =
+                    toml::from_str(&raw).with_context(|| format!("parsing {:?}", path))?;
                 tracing::info!("Loaded config from {:?}", path);
                 return Ok(Some(parsed));
             }
@@ -80,9 +91,21 @@ impl ConfigFile {
 
 pub fn default_frustration_keywords() -> Vec<String> {
     [
-        "não percebo", "não funciona", "por amor", "merda", "caralho",
-        "wtf", "why the hell", "this is broken", "not working", "foda-se",
-        "impossível", "broken", "crash", "error", "failed",
+        "não percebo",
+        "não funciona",
+        "por amor",
+        "merda",
+        "caralho",
+        "wtf",
+        "why the hell",
+        "this is broken",
+        "not working",
+        "foda-se",
+        "impossível",
+        "broken",
+        "crash",
+        "error",
+        "failed",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -103,7 +126,9 @@ mod tests {
     #[test]
     fn empty_file_parses_to_defaults() {
         let p = write_tmp("empty.toml", "");
-        let got = ConfigFile::load_if_present(&[p.as_path()]).unwrap().unwrap();
+        let got = ConfigFile::load_if_present(&[p.as_path()])
+            .unwrap()
+            .unwrap();
         assert!(got.gate.frustration_keywords.is_none());
         assert!(got.gate.tuning.periodic_check_minutes.is_none());
         assert!(got.runtime.min_send_interval_seconds.is_none());
@@ -118,7 +143,9 @@ mod tests {
 frustration_keywords = ["foo", "bar"]
 "#,
         );
-        let got = ConfigFile::load_if_present(&[p.as_path()]).unwrap().unwrap();
+        let got = ConfigFile::load_if_present(&[p.as_path()])
+            .unwrap()
+            .unwrap();
         assert_eq!(
             got.gate.frustration_keywords.unwrap(),
             vec!["foo".to_string(), "bar".to_string()]
@@ -138,7 +165,9 @@ text_new_words_threshold = 3
 min_send_interval_seconds = 42
 "#,
         );
-        let got = ConfigFile::load_if_present(&[p.as_path()]).unwrap().unwrap();
+        let got = ConfigFile::load_if_present(&[p.as_path()])
+            .unwrap()
+            .unwrap();
         assert_eq!(got.gate.tuning.periodic_check_minutes, Some(7));
         assert_eq!(got.gate.tuning.text_new_words_threshold, Some(3));
         assert_eq!(got.runtime.min_send_interval_seconds, Some(42));
@@ -171,4 +200,3 @@ min_send_interval_seconds = 42
         assert!(kws.iter().any(|k| k == "broken"));
     }
 }
-

@@ -78,4 +78,30 @@ pub struct FilterResponse {
     /// must NOT treat other fields as meaningful signal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parse_error: Option<String>,
+    /// Interests from the user's explicit list that matched the screen on
+    /// this tick (subset of what was sent in the user turn). Populated by
+    /// the core before calling the model so the client can show which of
+    /// the curated interests were actually fed to the LLM.
+    #[serde(default)]
+    pub matched_interests: Vec<String>,
+}
+
+impl FilterResponse {
+    /// Convenience for constructing a "nothing happened" response (gate
+    /// skip, budget exceeded, api error) without spelling out every
+    /// field in every call site.
+    pub fn short_circuit(alert_type: impl Into<String>, quick_message: impl Into<String>) -> Self {
+        Self {
+            should_alert: false,
+            alert_type: alert_type.into(),
+            urgency: "low".into(),
+            needs_deep_analysis: false,
+            quick_message: quick_message.into(),
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_usd: 0.0,
+            parse_error: None,
+            matched_interests: Vec::new(),
+        }
+    }
 }

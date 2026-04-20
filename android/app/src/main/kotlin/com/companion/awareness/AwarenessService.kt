@@ -130,6 +130,13 @@ class AwarenessService : Service() {
                 AppLog.w(TAG, "setBio failed", t)
             }
         }
+        // Push the user-curated interests list. Each service start
+        // gets a fresh snapshot from prefs so edits made while the
+        // service was down take effect.
+        runCatching {
+            val items = Settings.explicitInterests(this).toTypedArray()
+            CoreBridge.setExplicitInterests(items)
+        }.onFailure { t -> AppLog.w(TAG, "setExplicitInterests failed", t) }
     }
 
     private suspend fun runTickLoop() {
@@ -246,6 +253,14 @@ class AwarenessService : Service() {
         val cost = obj.optDouble("cost_usd", 0.0)
         val message = obj.optString("quick_message", "")
         val urgency = obj.optString("urgency", "low")
+
+        // Surface the interests that were actually fed to the model so
+        // the user can see the filter at work (and debug false misses).
+        val matched = obj.optJSONArray("matched_interests")
+        if (matched != null && matched.length() > 0) {
+            val list = (0 until matched.length()).map { matched.optString(it) }
+            TraceLog.interestsMatched(tickId, list)
+        }
 
         when {
             // The Rust core prefixes skipped gate decisions with "skipped:".

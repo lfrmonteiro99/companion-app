@@ -68,4 +68,24 @@ object Settings {
     fun setUserBio(ctx: Context, value: String) {
         plainPrefs(ctx).edit().putString(KEY_USER_BIO, value).apply()
     }
+
+    private const val KEY_EXPLICIT_INTERESTS = "explicit_interests_json"
+
+    /** Loads the user's curated interests from disk. Stored as a JSON
+     *  array of strings so ordering + non-ASCII labels survive. */
+    fun explicitInterests(ctx: Context): List<String> {
+        val raw = plainPrefs(ctx).getString(KEY_EXPLICIT_INTERESTS, "[]") ?: "[]"
+        return runCatching {
+            val arr = org.json.JSONArray(raw)
+            (0 until arr.length()).mapNotNull { idx ->
+                arr.optString(idx, "").takeIf { it.isNotBlank() }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun setExplicitInterests(ctx: Context, values: List<String>) {
+        val arr = org.json.JSONArray()
+        values.forEach { arr.put(it) }
+        plainPrefs(ctx).edit().putString(KEY_EXPLICIT_INTERESTS, arr.toString()).apply()
+    }
 }

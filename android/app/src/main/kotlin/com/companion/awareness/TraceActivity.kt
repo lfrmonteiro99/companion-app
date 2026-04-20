@@ -108,6 +108,7 @@ private fun TraceRow(entry: TraceLog.Entry) {
     val (label, accent) = when (entry.stage) {
         TraceLog.Stage.CAPTURE -> "CAPTURE" to Color(0xFF5C6BC0)
         TraceLog.Stage.MIC -> "MIC" to Color(0xFF00838F)
+        TraceLog.Stage.INTERESTS -> "INTERESTS" to Color(0xFF0277BD)
         TraceLog.Stage.GATE_SKIP -> "GATE SKIP" to Color(0xFF757575)
         TraceLog.Stage.GATE_SEND -> "GATE SEND" to Color(0xFF2E7D32)
         TraceLog.Stage.API_RESP -> "API" to Color(0xFF1565C0)

@@ -13,16 +13,21 @@
 //! Serialised to `filesDir/user_profile.json` on every update.
 //! Reads cheap (cached in memory after first load).
 
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
 const MAX_INTERESTS: usize = 40;
 const MAX_ANTI_INTERESTS: usize = 40;
 const MAX_INTEREST_LEN: usize = 160;
 const TOP_APPS_IN_PROMPT: usize = 6;
+const MAX_EXPLICIT_INTERESTS: usize = 80;
+const MIN_PATTERN_LEN: usize = 3;
+const TOP_K_FILTERED: usize = 12;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct UserProfile {
     /// User-written biography. Free-form, injected verbatim.
     #[serde(default)]
@@ -39,6 +44,32 @@ pub struct UserProfile {
     /// Unix epoch seconds of last mutation, for prompt freshness.
     #[serde(default)]
     pub updated_at: i64,
+    /// User-curated topic tags entered through the Android settings
+    /// UI. Orthogonal to `interests` (which is rating-learned) and to
+    /// `anti_interests`. Used to produce a per-tick filtered list
+    /// that the prompt injects only when the screen actually mentions
+    /// something that matches.
+    #[serde(default)]
+    pub explicit_interests: Vec<String>,
+    /// Aho-Corasick matcher over `explicit_interests`. Rebuilt on
+    /// mutation; never persisted.
+    #[serde(skip)]
+    matcher: OnceLock<Option<AhoCorasick>>,
+}
+
+impl Clone for UserProfile {
+    // OnceLock doesn't derive Clone; rebuild lazily on the clone.
+    fn clone(&self) -> Self {
+        Self {
+            bio: self.bio.clone(),
+            interests: self.interests.clone(),
+            anti_interests: self.anti_interests.clone(),
+            app_usage: self.app_usage.clone(),
+            updated_at: self.updated_at,
+            explicit_interests: self.explicit_interests.clone(),
+            matcher: OnceLock::new(),
+        }
+    }
 }
 
 impl UserProfile {
@@ -107,6 +138,120 @@ impl UserProfile {
         self.updated_at = chrono::Utc::now().timestamp();
     }
 
+    // ── Explicit (curated) interests ─────────────────────────────
+
+    pub fn list_explicit_interests(&self) -> &[String] {
+        &self.explicit_interests
+    }
+
+    /// Replace the whole list at once — matches the Kotlin UI model
+    /// where the user sees all pills and taps Save. Dedupes + trims.
+    pub fn set_explicit_interests(&mut self, items: Vec<String>) {
+        let mut out: Vec<String> = Vec::new();
+        for raw in items {
+            let t = normalise(&raw);
+            if t.chars().count() < MIN_PATTERN_LEN {
+                continue;
+            }
+            if out.iter().any(|s| s.eq_ignore_ascii_case(&t)) {
+                continue;
+            }
+            out.push(t);
+            if out.len() >= MAX_EXPLICIT_INTERESTS {
+                break;
+            }
+        }
+        self.explicit_interests = out;
+        self.matcher = OnceLock::new();
+        self.touch();
+    }
+
+    pub fn add_explicit_interest(&mut self, topic: &str) -> bool {
+        let t = normalise(topic);
+        if t.chars().count() < MIN_PATTERN_LEN
+            || self.explicit_interests.len() >= MAX_EXPLICIT_INTERESTS
+            || self
+                .explicit_interests
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(&t))
+        {
+            return false;
+        }
+        self.explicit_interests.push(t);
+        self.matcher = OnceLock::new();
+        self.touch();
+        true
+    }
+
+    pub fn remove_explicit_interest(&mut self, topic: &str) -> bool {
+        let before = self.explicit_interests.len();
+        self.explicit_interests
+            .retain(|s| !s.eq_ignore_ascii_case(topic));
+        if self.explicit_interests.len() == before {
+            return false;
+        }
+        self.matcher = OnceLock::new();
+        self.touch();
+        true
+    }
+
+    fn matcher(&self) -> &Option<AhoCorasick> {
+        self.matcher.get_or_init(|| {
+            if self.explicit_interests.is_empty() {
+                return None;
+            }
+            AhoCorasickBuilder::new()
+                .ascii_case_insensitive(true)
+                .match_kind(MatchKind::LeftmostLongest)
+                .build(self.explicit_interests.iter().map(|s| s.as_str()))
+                .ok()
+        })
+    }
+
+    /// Per-tick interest filter. Weights title + app 3× against screen.
+    /// Returns top-K explicit interests whose score exceeds a minimal
+    /// threshold; empty when nothing matches so the prompt stays clean.
+    pub fn filter_interests_for_screen(
+        &self,
+        screen: &str,
+        window_title: Option<&str>,
+        app: Option<&str>,
+    ) -> Vec<String> {
+        let Some(ac) = self.matcher() else {
+            return Vec::new();
+        };
+        // Haystack: app + title repeated 3× so specific signals beat
+        // generic body text. Screen trimmed to 4000 chars (first+last
+        // halves keep chrome + fresh content).
+        let haystack = build_haystack(screen, window_title, app);
+        let mut scores: HashMap<usize, (u32, f32)> = HashMap::new(); // pattern_id → (hits, score)
+        for m in ac.find_iter(&haystack) {
+            let entry = scores.entry(m.pattern().as_usize()).or_insert((0, 0.0));
+            entry.0 += 1;
+            // log-damp repetitions so a log file with 500× "error"
+            // doesn't flood the ranking.
+            entry.1 = 1.0 + (entry.0 as f32).ln_1p();
+        }
+        if scores.is_empty() {
+            return Vec::new();
+        }
+        let mut ranked: Vec<(usize, u32, f32)> = scores
+            .into_iter()
+            .map(|(id, (hits, score))| (id, hits, score))
+            .collect();
+        // Higher score first, then shorter label first (more specific).
+        ranked.sort_by(|a, b| {
+            b.2.partial_cmp(&a.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| self.explicit_interests[a.0].len().cmp(&self.explicit_interests[b.0].len()))
+        });
+        ranked
+            .into_iter()
+            .take(TOP_K_FILTERED)
+            .map(|(id, _, _)| self.explicit_interests[id].clone())
+            .collect()
+    }
+
     /// Formatted block to prepend to the model's system content.
     /// Empty when nothing meaningful exists yet, so early-run prompts
     /// aren't polluted with a bare "Apps mais usadas: " trailing colon.
@@ -155,6 +300,38 @@ fn normalise(s: &str) -> String {
     }
 }
 
+/// Assemble the text the AhoCorasick matcher scans. Window title and
+/// app package name get repeated three times at the front so that a
+/// tokio match in the title outscores a tokio mention in a random
+/// line of log. Screen text is capped to first 2k + last 2k chars to
+/// keep allocation bounded on huge a11y trees.
+fn build_haystack(screen: &str, window_title: Option<&str>, app: Option<&str>) -> String {
+    let mut out = String::with_capacity(512 + screen.len().min(4096));
+    for _ in 0..3 {
+        if let Some(t) = window_title {
+            out.push_str(t);
+            out.push('\n');
+        }
+        if let Some(a) = app {
+            out.push_str(a);
+            out.push('\n');
+        }
+    }
+    if screen.chars().count() <= 4000 {
+        out.push_str(screen);
+    } else {
+        let head: String = screen.chars().take(2000).collect();
+        let tail: String = screen
+            .chars()
+            .skip(screen.chars().count() - 2000)
+            .collect();
+        out.push_str(&head);
+        out.push_str("\n…\n");
+        out.push_str(&tail);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +355,44 @@ mod tests {
         p.add_interest("memes");
         assert!(p.interests.contains(&"memes".to_string()));
         assert!(!p.anti_interests.contains(&"memes".to_string()));
+    }
+
+    #[test]
+    fn filter_interests_matches_tokens_in_screen() {
+        let mut p = UserProfile::default();
+        p.set_explicit_interests(vec![
+            "Rust programming".into(),
+            "tokio".into(),
+            "kubernetes".into(),
+            "EU remote jobs".into(),
+        ]);
+        let out = p.filter_interests_for_screen(
+            "use tokio::sync::Mutex; fn main() {}",
+            Some("main.rs - VS Code"),
+            Some("com.visualstudio.code"),
+        );
+        assert!(out.contains(&"tokio".to_string()));
+        assert!(!out.contains(&"kubernetes".to_string()));
+    }
+
+    #[test]
+    fn filter_returns_empty_when_no_match() {
+        let mut p = UserProfile::default();
+        p.set_explicit_interests(vec!["rust".into(), "tokio".into()]);
+        let out = p.filter_interests_for_screen("weather is sunny today", None, None);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn set_explicit_interests_dedupes_and_rejects_short() {
+        let mut p = UserProfile::default();
+        p.set_explicit_interests(vec![
+            "rust".into(),
+            "RUST".into(),
+            "ai".into(), // < MIN_PATTERN_LEN
+            "tokio".into(),
+        ]);
+        assert_eq!(p.explicit_interests.len(), 2);
     }
 
     #[test]

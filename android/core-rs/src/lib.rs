@@ -152,17 +152,7 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
         log::info!("gate skip: {}", decision.reason);
         return ok_json(
             &mut env,
-            &FilterResponse {
-                should_alert: false,
-                alert_type: format!("skipped:{}", decision.reason),
-                urgency: "low".into(),
-                needs_deep_analysis: false,
-                quick_message: String::new(),
-                tokens_in: 0,
-                tokens_out: 0,
-                cost_usd: 0.0,
-                parse_error: None,
-            },
+            &FilterResponse::short_circuit(format!("skipped:{}", decision.reason), ""),
         );
     }
 
@@ -178,20 +168,13 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
         );
         return ok_json(
             &mut env,
-            &FilterResponse {
-                should_alert: false,
-                alert_type: "budget_exceeded".into(),
-                urgency: "low".into(),
-                needs_deep_analysis: false,
-                quick_message: format!(
+            &FilterResponse::short_circuit(
+                "budget_exceeded",
+                format!(
                     "Daily budget of ${:.2} exhausted. Alerts paused until tomorrow.",
                     state.config.budget_usd_daily,
                 ),
-                tokens_in: 0,
-                tokens_out: 0,
-                cost_usd: 0.0,
-                parse_error: None,
-            },
+            ),
         );
     }
 
@@ -212,17 +195,7 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
         );
         return ok_json(
             &mut env,
-            &FilterResponse {
-                should_alert: false,
-                alert_type: "skipped:already_alerted".into(),
-                urgency: "low".into(),
-                needs_deep_analysis: false,
-                quick_message: String::new(),
-                tokens_in: 0,
-                tokens_out: 0,
-                cost_usd: 0.0,
-                parse_error: None,
-            },
+            &FilterResponse::short_circuit("skipped:already_alerted", ""),
         );
     }
 
@@ -235,15 +208,24 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
     // 3. API call with rolling memory as context.
     let memory_lines = state.memory.to_prompt_lines();
     let profile_ctx = state.profile.to_prompt_context();
+    // Pick the subset of the user's explicit interests that actually
+    // match the current screen. Empty when none match — in that case
+    // the prompt omits the line entirely.
+    let matched_interests = state.profile.filter_interests_for_screen(
+        &event.screen_text_excerpt,
+        event.window_title.as_deref(),
+        event.app.as_deref(),
+    );
     let client = state.client.clone();
     // Drop the mutex while the HTTP call is in flight — Kotlin invokes
     // analyze from a background coroutine and may schedule another tick.
     let event_for_api = event.clone();
     drop(guard);
 
+    let matched_for_api = matched_interests.clone();
     let response: FilterResponse = runtime().block_on(async move {
         client
-            .filter_call(&event_for_api, &memory_lines, &profile_ctx)
+            .filter_call(&event_for_api, &memory_lines, &profile_ctx, &matched_for_api)
             .await
             .unwrap_or_else(|e| FilterResponse {
                 should_alert: false,
@@ -255,6 +237,7 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
                 tokens_out: 0,
                 cost_usd: 0.0,
                 parse_error: Some(e.to_string()),
+                matched_interests: matched_for_api.clone(),
             })
     });
 
@@ -368,6 +351,51 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_learnInterest<'lo
         }
         state_profile_save(state);
     });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_companion_awareness_CoreBridge_setExplicitInterests<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    items: jni::objects::JObjectArray<'local>,
+) {
+    let len = match env.get_array_length(&items) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    let mut out: Vec<String> = Vec::with_capacity(len.max(0) as usize);
+    for i in 0..len {
+        let Ok(obj) = env.get_object_array_element(&items, i) else {
+            continue;
+        };
+        let s: jni::objects::JString = obj.into();
+        let Ok(js) = env.get_string(&s) else { continue };
+        let value: String = js.into();
+        out.push(value);
+    }
+    with_state_mut(|state| {
+        state.profile.set_explicit_interests(out);
+        state_profile_save(state);
+    });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_companion_awareness_CoreBridge_getExplicitInterests<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    let body = state_slot()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| {
+            serde_json::to_string(s.profile.list_explicit_interests())
+                .unwrap_or_else(|_| "[]".into())
+        })
+        .unwrap_or_else(|| "[]".into());
+    env.new_string(body)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 #[no_mangle]

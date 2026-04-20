@@ -45,4 +45,13 @@ object CoreBridge {
     /** JSON snapshot of the current profile — used by ProfileActivity
      *  to render bio + interests + anti-interests + top-apps summary. */
     external fun getProfileText(): String
+
+    /** Replace the full list of user-curated explicit interests.
+     *  Called whenever the user saves in ProfileActivity so the Rust
+     *  matcher rebuilds immediately. */
+    external fun setExplicitInterests(items: Array<String>)
+
+    /** JSON array of the current explicit interests, for the UI to
+     *  hydrate the pill list. */
+    external fun getExplicitInterests(): String
 }

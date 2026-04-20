@@ -259,13 +259,28 @@ impl OpenAiClient {
         event: &ContextEvent,
         memory: &str,
         user_profile: &str,
+        matched_interests: &[String],
     ) -> Result<FilterResponse> {
         let event_json =
             serde_json::to_string(event).context("failed to serialise ContextEvent")?;
-        let user_content = if memory.is_empty() {
-            event_json
+        // Build the user turn. Matched-interests line is dynamic per
+        // tick, so it belongs here rather than in the static system
+        // prompt (keeps future prompt caching friendly). Sort and cap
+        // the list inside the formatter for predictable token count.
+        let interests_line = if matched_interests.is_empty() {
+            String::new()
         } else {
-            format!("Histórico recente (oldest first):\n{memory}\n\nContexto actual:\n{event_json}")
+            format!(
+                "Interesses do utilizador que aparecem no ecrã actual (comenta/resume com prioridade): {}\n\n",
+                matched_interests.join(", "),
+            )
+        };
+        let user_content = if memory.is_empty() {
+            format!("{interests_line}{event_json}")
+        } else {
+            format!(
+                "Histórico recente (oldest first):\n{memory}\n\n{interests_line}Contexto actual:\n{event_json}",
+            )
         };
 
         // Prepend any accumulated user profile (bio + interests +
@@ -384,6 +399,7 @@ impl OpenAiClient {
                         tokens_out,
                         cost_usd,
                         parse_error: Some(e.to_string()),
+                        matched_interests: matched_interests.to_vec(),
                     });
                 }
             };
@@ -398,6 +414,7 @@ impl OpenAiClient {
                 tokens_out,
                 cost_usd,
                 parse_error: None,
+                matched_interests: matched_interests.to_vec(),
             });
         }
 
@@ -420,6 +437,7 @@ mod tests {
             tokens_out: 20,
             cost_usd: 0.000018,
             parse_error,
+            matched_interests: Vec::new(),
         }
     }
 

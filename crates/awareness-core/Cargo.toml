@@ -17,6 +17,9 @@ toml = "0.8"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
+# Pure-Rust multi-pattern matcher used to pick which of the user's
+# explicit interests are worth injecting into the prompt on each tick.
+aho-corasick = "1.1"
 
 [features]
 default = []

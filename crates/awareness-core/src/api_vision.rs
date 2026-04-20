@@ -333,16 +333,27 @@ impl VisionClient {
         memory: &str,
         reason: &str,
         user_profile: &str,
+        matched_interests: &[String],
     ) -> Result<FilterResponse> {
         let tier = pick_tier(event, reason, &self.sharp_apps);
         tracing::info!("vision tier={:?} reason={reason}", tier);
 
         let event_json =
             serde_json::to_string(event).context("failed to serialise ContextEvent")?;
-        let text_block = if memory.is_empty() {
-            format!("Contexto local: {event_json}")
+        let interests_line = if matched_interests.is_empty() {
+            String::new()
         } else {
-            format!("Histórico recente (oldest first):\n{memory}\n\nContexto local: {event_json}")
+            format!(
+                "Interesses do utilizador que aparecem no ecrã actual (comenta/resume com prioridade): {}\n\n",
+                matched_interests.join(", "),
+            )
+        };
+        let text_block = if memory.is_empty() {
+            format!("{interests_line}Contexto local: {event_json}")
+        } else {
+            format!(
+                "Histórico recente (oldest first):\n{memory}\n\n{interests_line}Contexto local: {event_json}",
+            )
         };
         let b64 = B64.encode(image_png);
         let data_url = format!("data:image/png;base64,{b64}");
@@ -453,6 +464,7 @@ impl VisionClient {
                         tokens_out,
                         cost_usd,
                         parse_error: Some(e.to_string()),
+                        matched_interests: matched_interests.to_vec(),
                     });
                 }
             };
@@ -467,6 +479,7 @@ impl VisionClient {
                 tokens_out,
                 cost_usd,
                 parse_error: None,
+                matched_interests: matched_interests.to_vec(),
             });
         }
 

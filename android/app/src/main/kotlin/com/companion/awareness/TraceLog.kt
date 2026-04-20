@@ -23,7 +23,7 @@ object TraceLog {
 
     private val appContext = AtomicReference<Context?>(null)
 
-    enum class Stage { CAPTURE, MIC, GATE_SKIP, GATE_SEND, API_RESP, BUDGET, NOTIFY_POST, NOTIFY_SUPPRESS, ANALYZE_FAIL }
+    enum class Stage { CAPTURE, MIC, INTERESTS, GATE_SKIP, GATE_SEND, API_RESP, BUDGET, NOTIFY_POST, NOTIFY_SUPPRESS, ANALYZE_FAIL }
 
     data class Entry(
         val timestamp: String,
@@ -47,6 +47,20 @@ object TraceLog {
      */
     fun micStatus(message: String) =
         write(0L, Stage.MIC, "status: $message")
+
+    /**
+     * Explicit-interest matches that were included in the current
+     * API call. Empty list = nothing from the user's curated list is
+     * on screen this tick (the prompt omits the interests line).
+     */
+    fun interestsMatched(tickId: Long, matched: List<String>) {
+        if (matched.isEmpty()) return
+        write(
+            tickId,
+            Stage.INTERESTS,
+            "matched (${matched.size}): ${matched.joinToString(", ")}",
+        )
+    }
 
     fun gateSkip(tickId: Long, reason: String) =
         write(tickId, Stage.GATE_SKIP, "gate=Skip reason=$reason · NOT sending to OpenAI")

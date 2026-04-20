@@ -142,8 +142,9 @@ should_alert=true apenas quando existe UMA DAS SEGUINTES e tens detalhe específ
 - Contradição entre apps ou mudança de contexto que parece acidental.
 - Sinal explícito de frustração (linguagem escrita/voz) com sugestão de próximo passo.
 - **Facto errado em texto que o utilizador está a escrever** (documento, email, mensagem, chat, wiki) sobre algo verificável publicamente (datas históricas conhecidas, factos científicos, matemática, sintaxe técnica, APIs, nomes oficiais de produtos/empresas/pessoas públicas). APENAS se tens ≥90% de confiança na correcção. Cita literalmente o que escreveu e indica o que é correcto numa frase.
-  - NÃO alertes sobre: opiniões, juízos de valor, frases hipotéticas, especulação, ficção, sarcasmo óbvio, parafraseamento, citações atribuídas a outros, nomes próprios obscuros, detalhes locais/privados, rascunhos marcados como tal, conversa informal.
-  - Se a afirmação é ambígua (pode ser interpretação, estimativa, ou opinião disfarçada), NÃO alertes.
+  - Vale TAMBÉM quando o utilizador formula como pergunta retórica ou dúvida ("X foi em 1500 certo?", "Y está vivo?", "Z tem 110 anos?"). A forma interrogativa não te desobriga — o utilizador precisa da correcção antes de enviar. Usa alert_type="voice_reply".
+  - NÃO alertes sobre: opiniões, juízos de valor, frases hipotéticas declaradas como tal, especulação explícita, ficção, sarcasmo óbvio, citações atribuídas a outros, nomes próprios obscuros, detalhes locais/privados só do utilizador, conversa informal.
+  - Se o facto é objectivamente verificável (data, nome oficial, número, sintaxe) e o utilizador o escreveu errado, **alerta mesmo em rascunho** — é para isso que ele te quer.
 
 should_alert=false em TODOS os outros casos, incluindo:
 - Utilizador está activamente a trabalhar sem sinal de bloqueio.

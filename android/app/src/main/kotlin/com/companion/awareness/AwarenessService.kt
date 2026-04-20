@@ -405,10 +405,12 @@ class AwarenessService : Service() {
         private const val ALERT_CHANNEL_ID = "awareness_alerts"
         private const val NOTIF_ID = 1
         private const val ALERT_ID_BASE = 100
-        // 10s mirrors the Linux CLI default; the gate's server-side
-        // dedup keeps API cost bounded. 30s made the app feel dead
-        // because the first analysis was half a minute away.
-        private const val TICK_MS = 10_000L
+        // 5s to keep the "you're typing something wrong now" feedback
+        // loop tight. The gate's dedup + min_send_interval keep cost
+        // bounded when the screen doesn't change. 10s felt sluggish
+        // during live typing — the draft evolved across five ticks
+        // before the model finally alerted.
+        private const val TICK_MS = 5_000L
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_DATA = "data"
         /** MainActivity reads this from its launching intent and replays

@@ -95,19 +95,41 @@ jobs:
         with:
           gradle-version: "8.10.2"
 
-      - name: Assemble debug APK
+      # --- Release signing: decode the keystore from a GitHub secret.
+      # Gradle reads the four `awarenessRelease*` properties via
+      # ORG_GRADLE_PROJECT_* env vars (injected below) — that channel
+      # keeps the passwords out of the command line (no `-P` echo) and
+      # out of the Gradle build log.
+      - name: Decode release keystore
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_KEYSTORE_BASE64}" ]; then
+            echo "::error::RELEASE_KEYSTORE_BASE64 secret is missing — cannot release-sign the APK."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/signing"
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/signing/release.keystore"
+          echo "RELEASE_KEYSTORE_PATH=$RUNNER_TEMP/signing/release.keystore" >> "$GITHUB_ENV"
+
+      - name: Assemble release APK
         working-directory: android
         env:
           RUN_NUMBER: ${{ github.run_number }}
+          ORG_GRADLE_PROJECT_awarenessReleaseKeystore: ${{ env.RELEASE_KEYSTORE_PATH }}
+          ORG_GRADLE_PROJECT_awarenessReleaseKeystorePassword: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_awarenessReleaseKeyAlias: ${{ secrets.RELEASE_KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_awarenessReleaseKeyPassword: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
-          gradle :app:assembleDebug --no-daemon \
+          gradle :app:assembleRelease --no-daemon \
             -PawarenessVersionCode="$RUN_NUMBER" \
             -PawarenessVersionName="0.1.$RUN_NUMBER"
 
       - name: Locate APK
         id: apk
         run: |
-          path="android/app/build/outputs/apk/debug/app-debug.apk"
+          path="android/app/build/outputs/apk/release/app-release.apk"
           test -f "$path" || { echo "APK not found at $path"; exit 1; }
           dest="awareness-android-${TAG}.apk"
           cp "$path" "$dest"
@@ -144,9 +166,9 @@ jobs:
             echo ""
             echo "$commits"
             echo ""
-            echo "**Install**: download \`$APK\`, transfer to the phone, open it. Android will warn about an unknown source — this is a debug-signed APK."
+            echo "**Install**: download \`$APK\`, transfer to the phone, open it. First install asks \"Allow installs from this source\"; updates from later runs install in place (same signing key)."
             echo ""
-            echo "**Not for production**: debug signing + unencrypted API-key storage. See android/README for the shipping checklist."
+            echo "Signed with the release keystore held in GitHub secrets. API-key storage is still unencrypted on-device — see android/README for the shipping checklist before wider distribution."
           } > release_body.md
           echo "body_path=release_body.md" >> "$GITHUB_OUTPUT"
 

@@ -16,6 +16,26 @@ android {
     val ciVersionCode = providers.gradleProperty("awarenessVersionCode").orNull?.toIntOrNull()
     val ciVersionName = providers.gradleProperty("awarenessVersionName").orNull
 
+    // Release signing. CI supplies four properties via
+    // `ORG_GRADLE_PROJECT_awareness<*>` env vars sourced from GitHub
+    // secrets. When any one is missing we skip wiring the signingConfig,
+    // so local `assembleRelease` runs still fall back to the debug
+    // keystore (zero developer setup) instead of failing to build.
+    val releaseKeystorePath =
+        providers.gradleProperty("awarenessReleaseKeystore").orNull
+    val releaseKeystorePassword =
+        providers.gradleProperty("awarenessReleaseKeystorePassword").orNull
+    val releaseKeyAlias =
+        providers.gradleProperty("awarenessReleaseKeyAlias").orNull
+    val releaseKeyPassword =
+        providers.gradleProperty("awarenessReleaseKeyPassword").orNull
+    val hasReleaseSigning = listOf(
+        releaseKeystorePath,
+        releaseKeystorePassword,
+        releaseKeyAlias,
+        releaseKeyPassword,
+    ).all { !it.isNullOrBlank() }
+
     defaultConfig {
         applicationId = "com.companion.awareness"
         minSdk = 29
@@ -28,9 +48,23 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

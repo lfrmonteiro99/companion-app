@@ -6,3 +6,10 @@ target/
 *.wav
 *.jsonl
 plans/
+
+# Android release signing — keep the keystore + base64 copy out of git
+# no matter where they live in the tree. Losing this keystore means
+# losing the ability to ship updates with the same signing identity.
+*.keystore
+*.jks
+*.keystore.b64

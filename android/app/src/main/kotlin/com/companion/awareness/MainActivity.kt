@@ -71,9 +71,28 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
 
+    private fun startCaptureFlow() {
+        if (hasAllRuntimePermissions()) {
+            val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            projectionLauncher.launch(mpm.createScreenCaptureIntent())
+        } else {
+            runtimePermissionsLauncher.launch(requiredRuntimePermissions())
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CoreBridge.init()
+
+        // Tap-to-resume from the "Captura parou" notification. The
+        // service-side notification put EXTRA_AUTO_START=true on the
+        // PendingIntent; if a stored key is already present we trigger
+        // the same flow the Start button does, no extra clicks.
+        if (intent?.getBooleanExtra(AwarenessService.EXTRA_AUTO_START, false) == true &&
+            Settings.openAiKey(this).isNotBlank()
+        ) {
+            startCaptureFlow()
+        }
 
         setContent {
             MaterialTheme {
@@ -140,18 +159,7 @@ class MainActivity : ComponentActivity() {
                                 usageGranted = FocusedApp.isGranted(this@MainActivity)
                                 a11yEnabled = AwarenessAccessibilityService.isConnected()
                                 status = "requesting permissions…"
-                                if (hasAllRuntimePermissions()) {
-                                    val mpm = getSystemService(MEDIA_PROJECTION_SERVICE)
-                                        as MediaProjectionManager
-                                    projectionLauncher.launch(mpm.createScreenCaptureIntent())
-                                } else {
-                                    // Request RECORD_AUDIO + POST_NOTIFICATIONS
-                                    // first; the callback then launches the
-                                    // MediaProjection picker. Doing both in
-                                    // the same onClick would race and the
-                                    // foreground service crash on Android 14+.
-                                    runtimePermissionsLauncher.launch(requiredRuntimePermissions())
-                                }
+                                startCaptureFlow()
                             },
                         ) {
                             Text("Start capture")

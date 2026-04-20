@@ -27,6 +27,7 @@ class ScreenCapture(
     private val ctx: Context,
     private val resultCode: Int,
     private val data: Intent,
+    private val onStopped: (() -> Unit)? = null,
 ) {
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -43,12 +44,15 @@ class ScreenCapture(
         // `createVirtualDisplay` — without it `IllegalStateException:
         // Must register a callback before starting capture` kills the
         // foreground service and the user sees "Awareness keeps
-        // stopping". The callback also lets us release resources when
-        // the user revokes capture from the system UI.
+        // stopping". The callback also lets us react when the user (or,
+        // common on Samsung One UI, the OS power manager) revokes the
+        // projection: we surface a tap-to-resume notification and let
+        // the service exit cleanly.
         proj.registerCallback(
             object : MediaProjection.Callback() {
                 override fun onStop() {
                     AppLog.i(TAG, "MediaProjection stopped (user revoked or system released)")
+                    onStopped?.invoke()
                     stop()
                 }
             },

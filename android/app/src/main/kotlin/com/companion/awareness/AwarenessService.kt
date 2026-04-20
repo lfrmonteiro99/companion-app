@@ -57,7 +57,35 @@ class AwarenessService : Service() {
         startForegroundWithType()
         ensureAlertChannel()
 
-        screen = ScreenCapture(this, resultCode, data).also { it.start() }
+        screen = ScreenCapture(
+            this,
+            resultCode,
+            data,
+            onStopped = {
+                // MainActivity picks up EXTRA_AUTO_START and replays the
+                // permission + projection flow on launch, so a single tap
+                // on this notification gets the user back to a running
+                // service without extra clicks.
+                val resumeIntent = Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    .putExtra(EXTRA_AUTO_START, true)
+                val tap = PendingIntent.getActivity(
+                    this, 1, resumeIntent,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+                val notif = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+                    .setContentTitle("Captura parou")
+                    .setContentText("Toca aqui para retomar a captura.")
+                    .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                    .setAutoCancel(true)
+                    .setContentIntent(tap)
+                    .build()
+                val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                nm.notify(alertCounter.incrementAndGet(), notif)
+                stopSelf()
+            },
+        ).also { it.start() }
         // AudioRecord throws on construction without RECORD_AUDIO; the
         // service is allowed to start without mic, so skip audio wiring
         // when the user denied the permission.
@@ -271,6 +299,10 @@ class AwarenessService : Service() {
         private const val TICK_MS = 10_000L
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_DATA = "data"
+        /** MainActivity reads this from its launching intent and replays
+         *  the permission + MediaProjection flow automatically, so the
+         *  "Captura parou" notification is one-tap resume. */
+        const val EXTRA_AUTO_START = "auto_start"
 
         fun start(ctx: Context, resultCode: Int, data: Intent) {
             val i = Intent(ctx, AwarenessService::class.java)

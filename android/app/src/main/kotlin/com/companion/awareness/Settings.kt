@@ -57,6 +57,12 @@ object Settings {
     fun budgetUsdDaily(ctx: Context): Double =
         plainPrefs(ctx).getFloat(KEY_BUDGET_USD, DEFAULT_BUDGET_USD).toDouble()
 
+    fun setBudgetUsdDaily(ctx: Context, value: Double) {
+        plainPrefs(ctx).edit()
+            .putFloat(KEY_BUDGET_USD, value.coerceAtLeast(0.0).toFloat())
+            .apply()
+    }
+
     fun ttsEnabled(ctx: Context): Boolean =
         plainPrefs(ctx).getBoolean(KEY_TTS_ENABLED, DEFAULT_TTS_ENABLED)
 

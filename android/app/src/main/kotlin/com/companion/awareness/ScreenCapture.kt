@@ -10,6 +10,8 @@ import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.os.Handler
+import android.os.Looper
 import android.util.DisplayMetrics
 import android.view.WindowManager
 import com.google.mlkit.vision.common.InputImage
@@ -34,7 +36,24 @@ class ScreenCapture(
 
     fun start() {
         val mpm = ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        projection = mpm.getMediaProjection(resultCode, data)
+        val proj = mpm.getMediaProjection(resultCode, data)
+        projection = proj
+
+        // Android 14 (API 34) REQUIRES a registered callback before
+        // `createVirtualDisplay` — without it `IllegalStateException:
+        // Must register a callback before starting capture` kills the
+        // foreground service and the user sees "Awareness keeps
+        // stopping". The callback also lets us release resources when
+        // the user revokes capture from the system UI.
+        proj.registerCallback(
+            object : MediaProjection.Callback() {
+                override fun onStop() {
+                    AppLog.i(TAG, "MediaProjection stopped (user revoked or system released)")
+                    stop()
+                }
+            },
+            Handler(Looper.getMainLooper()),
+        )
 
         val metrics = DisplayMetrics().also {
             val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -47,13 +66,17 @@ class ScreenCapture(
             r.setOnImageAvailableListener({ onFrame(it) }, null)
         }
 
-        virtualDisplay = projection?.createVirtualDisplay(
+        virtualDisplay = proj.createVirtualDisplay(
             "awareness-capture",
             w, h, metrics.densityDpi,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             reader!!.surface,
             null, null,
         )
+    }
+
+    companion object {
+        private const val TAG = "ScreenCapture"
     }
 
     private fun onFrame(r: ImageReader) {

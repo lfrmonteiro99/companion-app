@@ -4,8 +4,10 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings as SystemSettings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -86,6 +88,31 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
 
+    private fun isBatteryOptimized(): Boolean {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        return !pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    /**
+     * Open the direct "allow background activity" flow for this app. Samsung
+     * One UI (and stock Android) normally routes us through a one-tap
+     * system dialog when we use ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+     * with a package URI. Fall back to the generic list screen on any
+     * device that rejects the direct action.
+     */
+    private fun openBatteryOptimizationSettings() {
+        val direct = Intent(
+            SystemSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+        ).apply {
+            data = Uri.parse("package:$packageName")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val fallback = Intent(SystemSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { startActivity(direct) }
+            .onFailure { startActivity(fallback) }
+    }
+
     companion object {
         private const val TAG = "MainActivity"
     }
@@ -160,6 +187,26 @@ class MainActivity : ComponentActivity() {
                                 startActivity(Intent(SystemSettings.ACTION_ACCESSIBILITY_SETTINGS))
                             }) {
                                 Text("Enable accessibility")
+                            }
+                        }
+                        var batteryOptimized by remember {
+                            mutableStateOf(isBatteryOptimized())
+                        }
+                        Text(
+                            if (batteryOptimized) {
+                                "Battery: app is being optimized — capture will be paused when backgrounded (Samsung). Disable for stable capture."
+                            } else {
+                                "Battery: unrestricted — capture can run in background."
+                            },
+                        )
+                        if (batteryOptimized) {
+                            Button(onClick = {
+                                openBatteryOptimizationSettings()
+                                // The result isn't returned as an Activity
+                                // result; re-check on resume by polling.
+                                batteryOptimized = isBatteryOptimized()
+                            }) {
+                                Text("Allow background activity")
                             }
                         }
                         Row(

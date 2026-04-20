@@ -8,6 +8,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Partial wake lock while the capture service is running — stops
+         Samsung / Doze from pausing the MediaProjection when the screen
+         locks or the app goes background. Costs battery; expected for a
+         continuous capture POC. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Lets the app open the per-app battery-optimization dialog so the
+         user can whitelist Awareness in one tap instead of hunting
+         through Settings > Apps > Battery. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!--
       Foreground-app detection. Protected permission — the user must
       grant it manually via Settings > Apps > Special app access >

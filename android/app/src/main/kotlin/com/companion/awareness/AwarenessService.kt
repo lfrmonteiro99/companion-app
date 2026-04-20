@@ -10,6 +10,8 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
+import java.util.concurrent.TimeUnit
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +35,7 @@ class AwarenessService : Service() {
     private var loopJob: Job? = null
     private var screen: ScreenCapture? = null
     private var audio: AudioCapture? = null
+    private var wakeLock: PowerManager.WakeLock? = null
     private val alertCounter = AtomicInteger(ALERT_ID_BASE)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -56,6 +59,7 @@ class AwarenessService : Service() {
 
         startForegroundWithType()
         ensureAlertChannel()
+        acquireWakeLockBestEffort()
 
         screen = ScreenCapture(
             this,
@@ -228,7 +232,32 @@ class AwarenessService : Service() {
         screen?.stop()
         audio?.stop()
         Tts.shutdown()
+        runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
+        wakeLock = null
         super.onDestroy()
+    }
+
+    /**
+     * Hold a PARTIAL_WAKE_LOCK while the service runs. Stops Doze and
+     * Samsung's aggressive background restrictions from pausing the
+     * MediaProjection when the screen locks. This is best-effort — some
+     * OEMs still kill fg-services after N minutes even with a wake
+     * lock; the battery-optimization whitelist button in MainActivity
+     * is the complete fix.
+     */
+    private fun acquireWakeLockBestEffort() {
+        runCatching {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            val wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Awareness::Capture")
+            wl.setReferenceCounted(false)
+            // 2-hour cap as a safety net: if onDestroy never runs (rare
+            // OEM death path), the lock still expires instead of
+            // draining battery until reboot.
+            wl.acquire(TimeUnit.HOURS.toMillis(2))
+            wakeLock = wl
+        }.onFailure { t ->
+            AppLog.w(TAG, "wake lock acquire failed", t)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

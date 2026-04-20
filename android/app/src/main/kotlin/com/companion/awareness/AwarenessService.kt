@@ -267,7 +267,7 @@ class AwarenessService : Service() {
             alertType.startsWith("skipped:") ->
                 TraceLog.gateSkip(tickId, alertType.removePrefix("skipped:"))
             alertType == "budget_exceeded" ->
-                TraceLog.budgetExceeded(tickId)
+                TraceLog.budgetExceeded(tickId, Settings.budgetUsdDaily(this))
             else -> {
                 TraceLog.gateSend(tickId, "api_call")
                 TraceLog.apiResponse(tickId, alertType, shouldAlert, cost, message)

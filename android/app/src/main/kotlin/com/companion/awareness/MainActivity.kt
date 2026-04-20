@@ -22,6 +22,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.Row
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,11 +34,22 @@ import androidx.compose.ui.unit.dp
 
 class MainActivity : ComponentActivity() {
 
+    // Shared with the Compose Status label so launcher callbacks can
+    // reflect reality — without this, clicking Cancel in the
+    // MediaProjection dialog left the UI stuck on "requesting permissions…"
+    // forever because the label only updated from the button onClick.
+    private val status: MutableState<String> = mutableStateOf("idle")
+
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            AppLog.i(TAG, "MediaProjection granted; starting service")
             AwarenessService.start(this, result.resultCode, result.data!!)
+            status.value = "capturing"
+        } else {
+            AppLog.w(TAG, "MediaProjection denied or cancelled (resultCode=${result.resultCode})")
+            status.value = "capture cancelled — tap Start to try again"
         }
     }
 
@@ -50,11 +62,14 @@ class MainActivity : ComponentActivity() {
     // every alert are silently dropped).
     private val runtimePermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ ->
+    ) { grants ->
+        val granted = grants.entries.joinToString(",") { "${it.key.substringAfterLast('.')}=${it.value}" }
+        AppLog.i(TAG, "runtime permissions result: $granted")
         // Regardless of which permissions the user granted, proceed to the
         // MediaProjection prompt. The service adapts its fgServiceType and
         // AudioCapture is a no-op when RECORD_AUDIO is denied.
         val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        status.value = "requesting screen access…"
         projectionLauncher.launch(mpm.createScreenCaptureIntent())
     }
 
@@ -71,11 +86,19 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
 
+    companion object {
+        private const val TAG = "MainActivity"
+    }
+
     private fun startCaptureFlow() {
         if (hasAllRuntimePermissions()) {
+            AppLog.i(TAG, "permissions already granted → requesting screen access")
             val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            status.value = "requesting screen access…"
             projectionLauncher.launch(mpm.createScreenCaptureIntent())
         } else {
+            AppLog.i(TAG, "missing runtime permissions → prompting")
+            status.value = "requesting permissions…"
             runtimePermissionsLauncher.launch(requiredRuntimePermissions())
         }
     }
@@ -97,7 +120,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    var status by remember { mutableStateOf("idle") }
+                    val statusText by status
                     var apiKey by remember { mutableStateOf(Settings.openAiKey(this@MainActivity)) }
                     var usageGranted by remember { mutableStateOf(FocusedApp.isGranted(this@MainActivity)) }
                     var a11yEnabled by remember { mutableStateOf(AwarenessAccessibilityService.isConnected()) }
@@ -152,13 +175,12 @@ class MainActivity : ComponentActivity() {
                                 },
                             )
                         }
-                        Text("Status: $status")
+                        Text("Status: $statusText")
                         Button(
                             enabled = apiKey.isNotBlank(),
                             onClick = {
                                 usageGranted = FocusedApp.isGranted(this@MainActivity)
                                 a11yEnabled = AwarenessAccessibilityService.isConnected()
-                                status = "requesting permissions…"
                                 startCaptureFlow()
                             },
                         ) {
@@ -166,7 +188,7 @@ class MainActivity : ComponentActivity() {
                         }
                         Button(onClick = {
                             AwarenessService.stop(this@MainActivity)
-                            status = "stopped"
+                            status.value = "stopped"
                         }) {
                             Text("Stop")
                         }

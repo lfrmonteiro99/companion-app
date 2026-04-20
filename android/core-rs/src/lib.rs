@@ -33,6 +33,12 @@ use std::sync::{Mutex, OnceLock};
 use tokio::runtime::Runtime;
 
 const MEMORY_CAPACITY: usize = 10;
+/// How many past alerted screens we keep fingerprints for — any new
+/// tick whose screen_text_excerpt matches one of these by trigram
+/// similarity ≥ SCREEN_DUP_THRESHOLD is short-circuited BEFORE the API
+/// call, so we don't pay tokens to re-confirm what we already alerted.
+const SCREEN_FINGERPRINT_CAPACITY: usize = 16;
+const SCREEN_DUP_THRESHOLD: f32 = 0.7;
 
 struct CoreState {
     client: OpenAiClient,
@@ -40,6 +46,10 @@ struct CoreState {
     gate: GateState,
     memory: MemoryRing,
     budget: BudgetController,
+    /// screen_text_excerpts that already produced a user-visible
+    /// alert. Walked by jaccard_trigrams on the next tick to drop
+    /// duplicates before spending API tokens.
+    alerted_screens: std::collections::VecDeque<String>,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -100,6 +110,7 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_configure<'local>
         gate: GateState::default(),
         memory: MemoryRing::new(MEMORY_CAPACITY),
         budget,
+        alerted_screens: std::collections::VecDeque::with_capacity(SCREEN_FINGERPRINT_CAPACITY),
     });
     log::info!("configure: core state ready (budget ${budget_usd_daily:.2}/day)");
 }
@@ -165,6 +176,37 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
                     "Daily budget of ${:.2} exhausted. Alerts paused until tomorrow.",
                     state.config.budget_usd_daily,
                 ),
+                tokens_in: 0,
+                tokens_out: 0,
+                cost_usd: 0.0,
+                parse_error: None,
+            },
+        );
+    }
+
+    // 2b. Pre-API dedup: if this screen text was already the basis
+    //     of a recent alert (jaccard ≥ 0.7), skip the model call
+    //     entirely. Saves the input tokens for situations where the
+    //     page didn't meaningfully change since the last alert (e.g.
+    //     the user is still on the same diff view / email / post).
+    let current_screen = event.screen_text_excerpt.clone();
+    let already_alerted = state.alerted_screens.iter().any(|past| {
+        awareness_core::dedup::TextDedup::jaccard_trigrams(past, &current_screen)
+            >= SCREEN_DUP_THRESHOLD
+    });
+    if already_alerted {
+        log::info!(
+            "pre-api dedup: skipping model call, screen already alerted (chars={})",
+            current_screen.len(),
+        );
+        return ok_json(
+            &mut env,
+            &FilterResponse {
+                should_alert: false,
+                alert_type: "skipped:already_alerted".into(),
+                urgency: "low".into(),
+                needs_deep_analysis: false,
+                quick_message: String::new(),
                 tokens_in: 0,
                 tokens_out: 0,
                 cost_usd: 0.0,
@@ -242,6 +284,12 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
                         should_alert: true,
                         quick_message: response.quick_message.clone(),
                     });
+                    // Remember the screen fingerprint so the next tick
+                    // short-circuits before the API call.
+                    if state.alerted_screens.len() == SCREEN_FINGERPRINT_CAPACITY {
+                        state.alerted_screens.pop_front();
+                    }
+                    state.alerted_screens.push_back(current_screen.clone());
                 }
             }
         }

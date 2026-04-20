@@ -20,7 +20,9 @@ object Settings {
     private const val KEY_BUDGET_USD = "budget_usd_daily"
     private const val KEY_TTS_ENABLED = "tts_enabled"
     private const val KEY_USER_BIO = "user_bio"
-    private const val DEFAULT_BUDGET_USD = 0.5f
+    // Dev/test default: kept generous so the app doesn't pause alerts
+    // mid-session during active development. Tighten before shipping.
+    private const val DEFAULT_BUDGET_USD = 5.0f
     private const val DEFAULT_TTS_ENABLED = true
 
     // Encrypted store holds the API key. Non-sensitive flags (budget,
@@ -54,6 +56,12 @@ object Settings {
 
     fun budgetUsdDaily(ctx: Context): Double =
         plainPrefs(ctx).getFloat(KEY_BUDGET_USD, DEFAULT_BUDGET_USD).toDouble()
+
+    fun setBudgetUsdDaily(ctx: Context, value: Double) {
+        plainPrefs(ctx).edit()
+            .putFloat(KEY_BUDGET_USD, value.coerceAtLeast(0.0).toFloat())
+            .apply()
+    }
 
     fun ttsEnabled(ctx: Context): Boolean =
         plainPrefs(ctx).getBoolean(KEY_TTS_ENABLED, DEFAULT_TTS_ENABLED)

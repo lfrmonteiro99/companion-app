@@ -166,6 +166,9 @@ class MainActivity : ComponentActivity() {
                     var usageGranted by remember { mutableStateOf(FocusedApp.isGranted(this@MainActivity)) }
                     var a11yEnabled by remember { mutableStateOf(AwarenessAccessibilityService.isConnected()) }
                     var ttsEnabled by remember { mutableStateOf(Settings.ttsEnabled(this@MainActivity)) }
+                    var budgetText by remember {
+                        mutableStateOf("%.2f".format(Settings.budgetUsdDaily(this@MainActivity)))
+                    }
 
                     Column(
                         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -240,6 +243,27 @@ class MainActivity : ComponentActivity() {
                                 },
                             )
                         }
+                        OutlinedTextField(
+                            value = budgetText,
+                            onValueChange = { raw ->
+                                // Accept comma as decimal separator (pt-PT
+                                // keyboards default to that). Strip anything
+                                // that isn't a digit or a decimal point so
+                                // the field can't hold non-numeric junk.
+                                val cleaned = raw.replace(',', '.')
+                                    .filter { it.isDigit() || it == '.' }
+                                budgetText = cleaned
+                                cleaned.toDoubleOrNull()?.let {
+                                    Settings.setBudgetUsdDaily(this@MainActivity, it)
+                                }
+                            },
+                            label = { Text("Daily budget USD (local cap, not OpenAI)") },
+                            singleLine = true,
+                        )
+                        Text(
+                            "Applies on next Start — Stop and Start capture after changing.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                         Text("Status: $statusText")
                         Button(
                             enabled = apiKey.isNotBlank(),

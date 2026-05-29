@@ -75,8 +75,13 @@ object TraceLog {
             "type=$alertType should_alert=$shouldAlert cost=${"$%.6f".format(costUsd)} msg=${message.take(140)}",
         )
 
-    fun budgetExceeded(tickId: Long) =
-        write(tickId, Stage.BUDGET, "daily budget exhausted · skipping API call")
+    fun budgetExceeded(tickId: Long, limitUsd: Double) =
+        write(
+            tickId,
+            Stage.BUDGET,
+            "local daily cap \$${"%.2f".format(limitUsd)} reached · skipping API call " +
+                "(app setting, not an OpenAI limit)",
+        )
 
     fun notificationPosted(tickId: Long, type: String, urgency: String) =
         write(tickId, Stage.NOTIFY_POST, "posted type=$type urgency=$urgency")

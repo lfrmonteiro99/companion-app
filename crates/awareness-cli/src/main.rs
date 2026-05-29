@@ -535,6 +535,9 @@ async fn run(args: RunArgs) -> Result<()> {
         let threshold = cfg.perceptual_hash_threshold;
         let similarity = cfg.text_dedup_similarity;
         let a11y_script = cfg.a11y_script.clone();
+        let vision_enabled = cfg.vision_enabled;
+        let vision_max_px = cfg.vision_max_image_px;
+        let latest_png_w = latest_png.clone();
         tokio::spawn(async move {
             let mut pdedup = PerceptualDedup::new(threshold);
             let mut tdedup = TextDedup::new(20, similarity);
@@ -610,6 +613,18 @@ async fn run(args: RunArgs) -> Result<()> {
                     out.full_text.chars().count(),
                     focused_image.is_some(),
                 );
+
+                if vision_enabled {
+                    let src_img = focused_image.as_ref().unwrap_or(&frame.image);
+                    // Downscale to bound image tokens, then PNG-encode.
+                    let scaled = src_img.resize(vision_max_px, vision_max_px, image::imageops::FilterType::Triangle);
+                    let mut buf = std::io::Cursor::new(Vec::new());
+                    if scaled.write_to(&mut buf, image::ImageFormat::Png).is_ok() {
+                        *latest_png_w.lock().await = Some(std::sync::Arc::new(buf.into_inner()));
+                    } else {
+                        tracing::warn!("vision: failed to PNG-encode frame");
+                    }
+                }
 
                 if tdedup.should_keep(&out.full_text) {
                     let _ = ocr_tx.send(out).await;

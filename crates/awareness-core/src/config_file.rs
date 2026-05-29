@@ -10,6 +10,21 @@ pub struct ConfigFile {
     pub runtime: RuntimeSection,
     pub tts: TtsSection,
     pub llm: LlmSection,
+    pub vision: VisionSection,
+    pub media_audio: MediaAudioSection,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct VisionSection {
+    pub enabled: Option<bool>,
+    pub max_image_px: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct MediaAudioSection {
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]

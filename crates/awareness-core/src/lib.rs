@@ -14,6 +14,7 @@ pub mod dedup;
 pub mod flow;
 pub mod gate;
 pub mod jsonl;
+pub mod media;
 pub mod memory;
 pub mod types;
 pub mod user_profile;

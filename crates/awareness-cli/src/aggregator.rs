@@ -78,6 +78,7 @@ fn build_event(
         duration_on_app_seconds,
         history_apps_30min,
         mic_text_new,
+        media_audio_text: None,
     }
 }
 
@@ -230,6 +231,9 @@ mod tests {
             log_level: "info".into(),
             a11y_script: std::path::PathBuf::from("a11y.py"),
             backend: BackendKind::Text,
+            vision_enabled: false,
+            vision_max_image_px: awareness_core::config::DEFAULT_VISION_MAX_IMAGE_PX,
+            media_audio_enabled: false,
         })
     }
 

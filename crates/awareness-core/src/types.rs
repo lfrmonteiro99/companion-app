@@ -111,8 +111,13 @@ mod tests {
             "screen_text_excerpt":"","mic_text_recent":null,"duration_on_app_seconds":1,
             "history_apps_30min":[],"media_audio_text":"upbeat music, voice says hi"}"#;
         let ev: ContextEvent = serde_json::from_str(json).unwrap();
-        assert_eq!(ev.media_audio_text.as_deref(), Some("upbeat music, voice says hi"));
-        assert!(serde_json::to_string(&ev).unwrap().contains("media_audio_text"));
+        assert_eq!(
+            ev.media_audio_text.as_deref(),
+            Some("upbeat music, voice says hi")
+        );
+        assert!(serde_json::to_string(&ev)
+            .unwrap()
+            .contains("media_audio_text"));
     }
 }
 

@@ -137,7 +137,13 @@ async fn main() -> anyhow::Result<()> {
 
     let t0 = std::time::Instant::now();
     let resp = client
-        .filter_call(&event, "", profile_ctx, &matched_interests, image_bytes.as_deref())
+        .filter_call(
+            &event,
+            "",
+            profile_ctx,
+            &matched_interests,
+            image_bytes.as_deref(),
+        )
         .await?;
     let elapsed = t0.elapsed();
 

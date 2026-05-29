@@ -86,7 +86,10 @@ struct FilterResponseRaw {
 
 /// Derive Ollama's native chat endpoint, tolerating a trailing `/v1` or `/`.
 pub(crate) fn ollama_chat_endpoint(base_url: &str) -> String {
-    let root = base_url.trim_end_matches('/').trim_end_matches("/v1").trim_end_matches('/');
+    let root = base_url
+        .trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .trim_end_matches('/');
     format!("{}/api/chat", root)
 }
 
@@ -105,7 +108,11 @@ fn build_user_message(content: &str, image_png: Option<&[u8]>) -> ChatMessage {
         Some(bytes) => vec![STANDARD.encode(bytes)],
         None => Vec::new(),
     };
-    ChatMessage { role: "user".to_string(), content: content.to_string(), images }
+    ChatMessage {
+        role: "user".to_string(),
+        content: content.to_string(),
+        images,
+    }
 }
 
 // ── System prompt ─────────────────────────────────────────────────────────────
@@ -574,8 +581,14 @@ mod tests {
 
     #[test]
     fn ollama_chat_endpoint_strips_v1() {
-        assert_eq!(ollama_chat_endpoint("http://omen:11434/v1"), "http://omen:11434/api/chat");
-        assert_eq!(ollama_chat_endpoint("http://localhost:11434/"), "http://localhost:11434/api/chat");
+        assert_eq!(
+            ollama_chat_endpoint("http://omen:11434/v1"),
+            "http://omen:11434/api/chat"
+        );
+        assert_eq!(
+            ollama_chat_endpoint("http://localhost:11434/"),
+            "http://localhost:11434/api/chat"
+        );
     }
 
     #[test]
@@ -597,7 +610,10 @@ mod tests {
         // No image → no images field serialized.
         let msg2 = build_user_message("hi", None);
         let v2 = serde_json::to_value(&msg2).unwrap();
-        assert!(v2.get("images").is_none(), "images must be omitted when absent");
+        assert!(
+            v2.get("images").is_none(),
+            "images must be omitted when absent"
+        );
     }
 
     #[test]

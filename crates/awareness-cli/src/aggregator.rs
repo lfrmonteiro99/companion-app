@@ -405,7 +405,10 @@ mod tests {
         });
 
         // Send a media audio transcript first.
-        media_tx.send("artist singing a pop song".to_string()).await.unwrap();
+        media_tx
+            .send("artist singing a pop song".to_string())
+            .await
+            .unwrap();
 
         // Give the aggregator a tick to process the media audio message before the OCR arrives.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

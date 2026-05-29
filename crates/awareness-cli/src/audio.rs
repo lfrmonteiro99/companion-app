@@ -151,14 +151,12 @@ pub async fn spawn_loopback_capture(tx: mpsc::Sender<AudioChunk>) -> Result<Join
 
         // Find monitor source (PulseAudio/PipeWire loopback)
         let device = match host.input_devices() {
-            Ok(devs) => devs
-                .into_iter()
-                .find(|d| {
-                    d.name()
-                        .unwrap_or_default()
-                        .to_lowercase()
-                        .contains("monitor")
-                }),
+            Ok(devs) => devs.into_iter().find(|d| {
+                d.name()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains("monitor")
+            }),
             Err(e) => {
                 let _ = ready_tx.send(Err(anyhow::anyhow!("input_devices: {e}")));
                 return;

@@ -290,13 +290,12 @@ async fn process_send(
     };
 
     let t1 = std::time::Instant::now();
-    let img_bytes: Option<Arc<Vec<u8>>> = if backend.needs_image()
-        && awareness_core::media::is_media_app(event.app.as_deref())
-    {
-        latest_png.lock().await.clone()
-    } else {
-        None
-    };
+    let img_bytes: Option<Arc<Vec<u8>>> =
+        if backend.needs_image() && awareness_core::media::is_media_app(event.app.as_deref()) {
+            latest_png.lock().await.clone()
+        } else {
+            None
+        };
     let img_ref: Option<&[u8]> = img_bytes.as_deref().map(|v| v.as_slice());
     let mem_str = memory.lock().await.to_prompt_lines();
 
@@ -624,7 +623,11 @@ async fn run(args: RunArgs) -> Result<()> {
                 {
                     let src_img = focused_image.as_ref().unwrap_or(&frame.image);
                     // Downscale to bound image tokens, then PNG-encode.
-                    let scaled = src_img.resize(vision_max_px, vision_max_px, image::imageops::FilterType::Triangle);
+                    let scaled = src_img.resize(
+                        vision_max_px,
+                        vision_max_px,
+                        image::imageops::FilterType::Triangle,
+                    );
                     let mut buf = std::io::Cursor::new(Vec::new());
                     if scaled.write_to(&mut buf, image::ImageFormat::Png).is_ok() {
                         *latest_png_w.lock().await = Some(std::sync::Arc::new(buf.into_inner()));
@@ -694,7 +697,9 @@ async fn run(args: RunArgs) -> Result<()> {
     {
         let cfg = cfg.clone();
         tokio::spawn(async move {
-            if let Err(e) = aggregator::run(ocr_rx, transcript_rx, event_tx, cfg, media_audio_rx).await {
+            if let Err(e) =
+                aggregator::run(ocr_rx, transcript_rx, event_tx, cfg, media_audio_rx).await
+            {
                 tracing::error!("Aggregator: {e}");
             }
         });

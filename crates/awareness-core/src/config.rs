@@ -264,15 +264,21 @@ impl Config {
 
         let tts_command = args.tts_command.or_else(|| toml_cfg.tts.command.clone());
 
-        let vision_enabled = args.vision_enabled
+        let vision_enabled = args
+            .vision_enabled
             .or_else(|| env_parsed::<bool>("AWARENESS_VISION_ENABLED"))
-            .or(toml_cfg.vision.enabled).unwrap_or(false);
-        let vision_max_image_px = args.vision_max_image_px
+            .or(toml_cfg.vision.enabled)
+            .unwrap_or(false);
+        let vision_max_image_px = args
+            .vision_max_image_px
             .or_else(|| env_parsed::<u32>("AWARENESS_VISION_MAX_IMAGE_PX"))
-            .or(toml_cfg.vision.max_image_px).unwrap_or(DEFAULT_VISION_MAX_IMAGE_PX);
-        let media_audio_enabled = args.media_audio_enabled
+            .or(toml_cfg.vision.max_image_px)
+            .unwrap_or(DEFAULT_VISION_MAX_IMAGE_PX);
+        let media_audio_enabled = args
+            .media_audio_enabled
             .or_else(|| env_parsed::<bool>("AWARENESS_MEDIA_AUDIO_ENABLED"))
-            .or(toml_cfg.media_audio.enabled).unwrap_or(false);
+            .or(toml_cfg.media_audio.enabled)
+            .unwrap_or(false);
 
         let a11y_script = args
             .a11y_script

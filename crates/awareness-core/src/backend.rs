@@ -5,18 +5,26 @@ use crate::config::Config;
 use crate::types::{ContextEvent, FilterResponse};
 
 pub enum Backend {
-    Text { client: OpenAiClient, wants_image: bool },
+    Text {
+        client: OpenAiClient,
+        wants_image: bool,
+    },
 }
 
 impl Backend {
     pub fn new(kind: BackendKind, cfg: &Config) -> Result<Self> {
         Ok(match kind {
-            BackendKind::Text => Backend::Text { client: OpenAiClient::new(cfg)?, wants_image: cfg.vision_enabled },
+            BackendKind::Text => Backend::Text {
+                client: OpenAiClient::new(cfg)?,
+                wants_image: cfg.vision_enabled,
+            },
         })
     }
 
     pub fn needs_image(&self) -> bool {
-        match self { Backend::Text { wants_image, .. } => *wants_image }
+        match self {
+            Backend::Text { wants_image, .. } => *wants_image,
+        }
     }
 
     pub async fn analyze(
@@ -29,15 +37,26 @@ impl Backend {
         matched_interests: &[String],
     ) -> Result<FilterResponse> {
         match self {
-            Backend::Text { client, wants_image } => {
+            Backend::Text {
+                client,
+                wants_image,
+            } => {
                 let img = if *wants_image { image_png } else { None };
-                client.filter_call(event, memory_summary, user_profile, matched_interests, img).await
+                client
+                    .filter_call(event, memory_summary, user_profile, matched_interests, img)
+                    .await
             }
         }
     }
 
-    pub fn label(&self) -> &'static str { match self { Backend::Text { .. } => "text" } }
-    pub fn max_cost_estimate_usd(&self) -> f64 { 0.0 }
+    pub fn label(&self) -> &'static str {
+        match self {
+            Backend::Text { .. } => "text",
+        }
+    }
+    pub fn max_cost_estimate_usd(&self) -> f64 {
+        0.0
+    }
 }
 
 #[cfg(test)]

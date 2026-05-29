@@ -19,7 +19,8 @@ impl WhisperEngine {
     ///
     /// With `full` feature: loads the binary model file.
     /// Without `full` feature: returns a no-op stub immediately.
-    #[allow(dead_code)]
+    // `needless_return`: the cfg branches are alternates (full vs stub).
+    #[allow(dead_code, clippy::needless_return)]
     pub fn load(model_path: &Path) -> Result<Self> {
         #[cfg(feature = "full")]
         {
@@ -46,7 +47,8 @@ impl WhisperEngine {
     ///
     /// With `full` feature: runs full whisper inference.
     /// Without `full` feature: returns an empty transcript immediately.
-    #[allow(dead_code)]
+    // `needless_return`: the cfg branches are alternates (full vs stub).
+    #[allow(dead_code, clippy::needless_return)]
     pub fn transcribe(&self, chunk: &AudioChunk) -> Result<TranscriptChunk> {
         #[cfg(feature = "full")]
         {

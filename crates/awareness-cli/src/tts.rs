@@ -78,14 +78,22 @@ pub fn speak(text: &str, cfg: &TtsConfig) {
     // spd-say is async by default (returns immediately after queueing); the
     // others block for the full utterance. Either way we don't await.
     let args = args_for(cmd, &trimmed);
-    let result = Command::new(cmd)
+    let spawned = Command::new(cmd)
         .args(&args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .stdin(std::process::Stdio::null())
         .spawn();
-    if let Err(e) = result {
-        tracing::warn!("tts: failed to spawn {cmd}: {e}");
+    match spawned {
+        Ok(mut child) => {
+            // Reap the child so blocking backends (espeak-ng/espeak/say)
+            // don't accumulate as zombies for the lifetime of the run.
+            // Detached: alert dispatch is never held up by playback.
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+            });
+        }
+        Err(e) => tracing::warn!("tts: failed to spawn {cmd}: {e}"),
     }
 }
 

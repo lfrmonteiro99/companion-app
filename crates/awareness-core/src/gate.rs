@@ -27,6 +27,41 @@ pub struct GateState {
     pub last_voice_send: Option<DateTime<Utc>>,
 }
 
+/// Whole-word (boundary-aware) substring search. Matches `keyword` only
+/// when it is delimited by non-alphanumeric characters or string edges, so
+/// a frustration keyword like "error" doesn't fire inside "terror" or
+/// "mirror". Handles multi-word keyword phrases too (e.g. "not working").
+/// Both arguments are expected to be already lowercased by the caller.
+fn contains_keyword(haystack: &str, keyword: &str) -> bool {
+    if keyword.is_empty() {
+        return false;
+    }
+    let mut from = 0;
+    while let Some(rel) = haystack[from..].find(keyword) {
+        let start = from + rel;
+        let end = start + keyword.len();
+        let before_ok = start == 0
+            || !haystack[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric());
+        let after_ok = end >= haystack.len()
+            || !haystack[end..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric());
+        if before_ok && after_ok {
+            return true;
+        }
+        // Advance past the current match start to find later occurrences.
+        from = start + keyword.chars().next().map_or(1, char::len_utf8);
+        if from >= haystack.len() {
+            break;
+        }
+    }
+    false
+}
+
 /// Count distinct whitespace-split tokens in `current` that are not present in
 /// `previous`. Cheap proxy for "how much new content appeared" — works well
 /// for typing into a compose box where the surrounding UI text stays constant.
@@ -72,7 +107,7 @@ pub fn evaluate(event: &ContextEvent, state: &mut GateState, cfg: &Config) -> Ga
     let screen_lower = event.screen_text_excerpt.to_lowercase();
     let has_frustration = cfg.gate_frustration_keywords.iter().any(|kw| {
         let kw_lower = kw.to_lowercase();
-        mic_lower.contains(&kw_lower) || screen_lower.contains(&kw_lower)
+        contains_keyword(&mic_lower, &kw_lower) || contains_keyword(&screen_lower, &kw_lower)
     });
 
     if has_frustration {
@@ -248,6 +283,43 @@ mod tests {
         };
         let mut event = make_event();
         event.mic_text_recent = Some("wtf is this".to_string());
+        let decision = evaluate(&event, &mut state, &cfg);
+        assert_eq!(decision.action, GateAction::Send);
+        assert_eq!(decision.reason, "emotional");
+    }
+
+    #[test]
+    fn frustration_keyword_requires_word_boundary() {
+        // "error" is a default keyword but must NOT fire inside "terror".
+        // (The old substring match did, and "emotional" bypasses the
+        // global send cooldown — so this was real alert spam.)
+        let cfg = make_config();
+        let mut state = GateState {
+            last_app: Some("vscode".to_string()),
+            last_sent_at: Some(Utc::now()),
+            last_sent_text: Some("the terror of deadlines".to_string()),
+            last_voice_send: None,
+        };
+        let mut event = make_event();
+        event.screen_text_excerpt = "the terror of deadlines".to_string();
+        let decision = evaluate(&event, &mut state, &cfg);
+        assert_ne!(
+            decision.reason, "emotional",
+            "substring inside a larger word must not trigger frustration"
+        );
+    }
+
+    #[test]
+    fn frustration_keyword_fires_as_whole_word() {
+        let cfg = make_config();
+        let mut state = GateState {
+            last_app: Some("vscode".to_string()),
+            last_sent_at: Some(Utc::now()),
+            last_sent_text: Some("some code here".to_string()),
+            last_voice_send: None,
+        };
+        let mut event = make_event();
+        event.screen_text_excerpt = "the build is broken again".to_string();
         let decision = evaluate(&event, &mut state, &cfg);
         assert_eq!(decision.action, GateAction::Send);
         assert_eq!(decision.reason, "emotional");

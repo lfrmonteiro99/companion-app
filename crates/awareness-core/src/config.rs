@@ -135,7 +135,16 @@ impl Config {
         let toml_cfg = {
             let default_paths: Vec<PathBuf> = match args.config.clone() {
                 Some(p) => vec![p],
-                None => vec![PathBuf::from("config.toml"), PathBuf::from("./config.toml")],
+                None => {
+                    // cwd-relative first, then the user's XDG config dir.
+                    // (The previous second entry `./config.toml` resolved
+                    // to the same path as `config.toml` — dead weight.)
+                    let mut paths = vec![PathBuf::from("config.toml")];
+                    if let Some(home) = std::env::var_os("HOME") {
+                        paths.push(PathBuf::from(home).join(".config/companion-app/config.toml"));
+                    }
+                    paths
+                }
             };
             let refs: Vec<&Path> = default_paths.iter().map(|p| p.as_path()).collect();
             ConfigFile::load_if_present(&refs)?.unwrap_or_default()
@@ -220,10 +229,12 @@ impl Config {
             .or(toml_cfg.llm.timeout_seconds)
             .unwrap_or(DEFAULT_LLM_TIMEOUT_SECONDS);
 
-        let min_send_interval_seconds = toml_cfg
-            .runtime
-            .min_send_interval_seconds
-            .or_else(|| env_parsed::<u64>("AWARENESS_MIN_SEND_INTERVAL_SECONDS"))
+        // env > TOML > default (no CLI arg exists for this field). The
+        // previous order let TOML silently override the documented
+        // AWARENESS_MIN_SEND_INTERVAL_SECONDS env var — inconsistent with
+        // every other field's CLI > env > TOML precedence.
+        let min_send_interval_seconds = env_parsed::<u64>("AWARENESS_MIN_SEND_INTERVAL_SECONDS")
+            .or(toml_cfg.runtime.min_send_interval_seconds)
             .unwrap_or(15);
 
         let transcript_window_size = args
@@ -425,6 +436,12 @@ mod tests {
     }
 
     fn valid_config() -> Config {
+        let out = tmp_output_dir("valid");
+        // Under --features full, validate() requires the whisper model to
+        // exist on disk; create a dummy so the happy-path validation tests
+        // pass under both the default and `full` feature sets.
+        let whisper_model_path = out.join("ggml-base.bin");
+        std::fs::write(&whisper_model_path, b"dummy").unwrap();
         Config {
             openai_api_key: String::new(),
             llm_base_url: DEFAULT_LLM_BASE_URL.into(),
@@ -433,7 +450,7 @@ mod tests {
             budget_usd_daily: 1.0,
             tick_screen_seconds: 2,
             tick_analysis_seconds: 10,
-            whisper_model_path: PathBuf::from("models/ggml-base.bin"),
+            whisper_model_path,
             perceptual_hash_threshold: 3,
             text_dedup_similarity: 0.99,
             gate_app_time_threshold_minutes: 25,
@@ -446,7 +463,7 @@ mod tests {
             transcript_window_size: 5,
             tts_enabled: false,
             tts_command: None,
-            output_dir: tmp_output_dir("valid"),
+            output_dir: out,
             log_level: "info".into(),
             a11y_script: PathBuf::from("../../scripts/a11y_dump.py"),
             backend: BackendKind::Text,

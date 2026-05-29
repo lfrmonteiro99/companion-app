@@ -380,8 +380,7 @@ fn run_pipewire_loop(
                 if let Some(frame) = frame_opt {
                     match tx_for_process.try_send(frame) {
                         Ok(()) => {
-                            frames_for_process
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            frames_for_process.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                         Err(_) => tracing::debug!("portal: frame channel full — dropping"),
                     }
@@ -448,9 +447,18 @@ fn build_enum_format_bytes() -> Result<Vec<u8>> {
             Choice,
             Range,
             Rectangle,
-            Rectangle { width: 1920, height: 1080 },
-            Rectangle { width: 1, height: 1 },
-            Rectangle { width: 8192, height: 8192 }
+            Rectangle {
+                width: 1920,
+                height: 1080
+            },
+            Rectangle {
+                width: 1,
+                height: 1
+            },
+            Rectangle {
+                width: 8192,
+                height: 8192
+            }
         ),
         pipewire::spa::pod::property!(
             FormatProperties::VideoFramerate,
@@ -462,13 +470,11 @@ fn build_enum_format_bytes() -> Result<Vec<u8>> {
             Fraction { num: 240, denom: 1 }
         ),
     );
-    let bytes: Vec<u8> = PodSerializer::serialize(
-        std::io::Cursor::new(Vec::new()),
-        &Value::Object(obj),
-    )
-    .context("serialize EnumFormat pod")?
-    .0
-    .into_inner();
+    let bytes: Vec<u8> =
+        PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(obj))
+            .context("serialize EnumFormat pod")?
+            .0
+            .into_inner();
     Ok(bytes)
 }
 
@@ -536,11 +542,13 @@ fn publish_stream_params(stream: &pipewire::stream::StreamRef) -> Result<()> {
         ],
     };
 
-    let buffers_bytes: Vec<u8> =
-        PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(buffers_obj))
-            .context("serialize ParamBuffers")?
-            .0
-            .into_inner();
+    let buffers_bytes: Vec<u8> = PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &Value::Object(buffers_obj),
+    )
+    .context("serialize ParamBuffers")?
+    .0
+    .into_inner();
     let meta_header_bytes: Vec<u8> = PodSerializer::serialize(
         std::io::Cursor::new(Vec::new()),
         &Value::Object(meta_header_obj),

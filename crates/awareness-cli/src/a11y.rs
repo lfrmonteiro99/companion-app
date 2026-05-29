@@ -115,9 +115,7 @@ pub async fn try_snapshot(
     // wide enough. Electron/VS Code with --force-renderer-accessibility
     // often has many nodes but empty text (toolbars, icons) and should
     // still fall through to OCR+crop.
-    let is_thin = snap.thin
-        || snap.text.chars().count() < min_chars
-        || snap.nodes < min_nodes;
+    let is_thin = snap.thin || snap.text.chars().count() < min_chars || snap.nodes < min_nodes;
 
     if is_thin {
         tracing::info!(

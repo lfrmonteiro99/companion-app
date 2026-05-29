@@ -24,6 +24,12 @@ impl MemoryRing {
         }
     }
     pub fn push(&mut self, e: MemoryEntry) {
+        // A zero-capacity ring must hold nothing. Without this guard the
+        // `len == capacity` check is `0 == 0`, which pops an empty deque
+        // and then pushes — leaving exactly one entry.
+        if self.capacity == 0 {
+            return;
+        }
         if self.buf.len() == self.capacity {
             self.buf.pop_front();
         }
@@ -88,6 +94,19 @@ mod tests {
         let s = r.to_prompt_lines();
         assert!(!s.contains("\"a\""), "oldest must be evicted: {s}");
         assert!(s.contains("\"b\"") && s.contains("\"c\""));
+    }
+
+    #[test]
+    fn zero_capacity_keeps_nothing() {
+        let mut r = MemoryRing::new(0);
+        r.push(mk("a"));
+        r.push(mk("b"));
+        assert_eq!(
+            r.to_prompt_lines(),
+            "",
+            "zero-capacity ring must stay empty"
+        );
+        assert_eq!(r.entries().count(), 0);
     }
 
     #[test]

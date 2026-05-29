@@ -58,10 +58,14 @@ fn build_event(
 
     let duration_on_app_seconds = app_started_at.elapsed().as_secs();
 
-    let thirty_min_ago = Instant::now() - std::time::Duration::from_secs(30 * 60);
+    // `Instant - Duration` panics if the result predates the monotonic
+    // epoch — reachable whenever system uptime is under 30 minutes. When
+    // there's no representable cutoff, every recorded instant is within
+    // the window anyway, so keep them all.
+    let cutoff = Instant::now().checked_sub(std::time::Duration::from_secs(30 * 60));
     let history_apps_30min = app_history
         .iter()
-        .filter(|(_, _, when)| *when >= thirty_min_ago)
+        .filter(|(_, _, when)| cutoff.is_none_or(|c| *when >= c))
         .map(|(app, secs, _)| (app.clone(), *secs))
         .collect();
 

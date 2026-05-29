@@ -26,6 +26,10 @@ const TOP_APPS_IN_PROMPT: usize = 6;
 const MAX_EXPLICIT_INTERESTS: usize = 80;
 const MIN_PATTERN_LEN: usize = 3;
 const TOP_K_FILTERED: usize = 12;
+/// Hard cap on distinct apps tracked in `app_usage`. Without it the map
+/// (and the JSON written every save) grows unbounded over long sessions;
+/// only the top-N ever surface in the prompt anyway.
+const MAX_APP_USAGE: usize = 200;
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct UserProfile {
@@ -74,10 +78,26 @@ impl Clone for UserProfile {
 
 impl UserProfile {
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            // Missing file is the normal first-run case — start fresh.
+            return Self::default();
+        };
+        match serde_json::from_str(&raw) {
+            Ok(profile) => profile,
+            Err(e) => {
+                // The file exists but is corrupt. Don't silently wipe the
+                // user's bio/interests — preserve the bad file alongside
+                // (`.json.corrupt`) and warn so it's recoverable.
+                let backup = path.with_extension("json.corrupt");
+                let _ = std::fs::rename(path, &backup);
+                tracing::warn!(
+                    "user_profile at {:?} is corrupt ({e}); backed up to {:?}, starting fresh",
+                    path,
+                    backup
+                );
+                Self::default()
+            }
+        }
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
@@ -98,6 +118,19 @@ impl UserProfile {
             return;
         }
         *self.app_usage.entry(app.to_string()).or_insert(0) += 1;
+        // Bound the map: when a new key pushes it past the cap, drop the
+        // least-used entry. (Existing keys only bump a counter, so the
+        // map only grows on a genuinely new app.)
+        if self.app_usage.len() > MAX_APP_USAGE {
+            if let Some(min_key) = self
+                .app_usage
+                .iter()
+                .min_by_key(|(_, &count)| count)
+                .map(|(k, _)| k.clone())
+            {
+                self.app_usage.remove(&min_key);
+            }
+        }
         self.touch();
     }
 
@@ -112,7 +145,8 @@ impl UserProfile {
         if !self.interests.iter().any(|s| s == &trimmed) {
             self.interests.push(trimmed);
             if self.interests.len() > MAX_INTERESTS {
-                self.interests.drain(0..self.interests.len() - MAX_INTERESTS);
+                self.interests
+                    .drain(0..self.interests.len() - MAX_INTERESTS);
             }
         }
         self.touch();
@@ -243,7 +277,11 @@ impl UserProfile {
         ranked.sort_by(|a, b| {
             b.2.partial_cmp(&a.2)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| self.explicit_interests[a.0].len().cmp(&self.explicit_interests[b.0].len()))
+                .then_with(|| {
+                    self.explicit_interests[a.0]
+                        .len()
+                        .cmp(&self.explicit_interests[b.0].len())
+                })
         });
         ranked
             .into_iter()
@@ -317,14 +355,12 @@ fn build_haystack(screen: &str, window_title: Option<&str>, app: Option<&str>) -
             out.push('\n');
         }
     }
-    if screen.chars().count() <= 4000 {
+    let char_count = screen.chars().count();
+    if char_count <= 4000 {
         out.push_str(screen);
     } else {
         let head: String = screen.chars().take(2000).collect();
-        let tail: String = screen
-            .chars()
-            .skip(screen.chars().count() - 2000)
-            .collect();
+        let tail: String = screen.chars().skip(char_count - 2000).collect();
         out.push_str(&head);
         out.push_str("\n…\n");
         out.push_str(&tail);
@@ -345,7 +381,9 @@ mod tests {
     fn bio_alone_shows_in_context() {
         let mut p = UserProfile::default();
         p.set_bio("engineer".into());
-        assert!(p.to_prompt_context().contains("Sobre o utilizador: engineer"));
+        assert!(p
+            .to_prompt_context()
+            .contains("Sobre o utilizador: engineer"));
     }
 
     #[test]
@@ -393,6 +431,45 @@ mod tests {
             "tokio".into(),
         ]);
         assert_eq!(p.explicit_interests.len(), 2);
+    }
+
+    #[test]
+    fn load_corrupt_file_backs_up_and_returns_default() {
+        let dir = std::env::temp_dir().join(format!(
+            "awareness-profile-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("user_profile.json");
+        std::fs::write(&path, "{ this is : not valid json").unwrap();
+
+        let p = UserProfile::load(&path);
+        assert!(
+            p.bio.is_empty(),
+            "corrupt load must yield a default profile"
+        );
+
+        let backup = path.with_extension("json.corrupt");
+        assert!(
+            backup.exists(),
+            "corrupt file must be preserved as a backup"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn app_usage_is_capped() {
+        let mut p = UserProfile::default();
+        for i in 0..(MAX_APP_USAGE + 50) {
+            p.record_app_usage(&format!("app{i}"));
+        }
+        assert!(
+            p.app_usage.len() <= MAX_APP_USAGE,
+            "app_usage must stay within the cap, got {}",
+            p.app_usage.len()
+        );
     }
 
     #[test]

@@ -50,7 +50,14 @@ struct ChatMessage {
 
 #[derive(Deserialize)]
 struct ChatResponse {
-    message: ChatResponseMessage,
+    /// Optional so an Ollama error envelope (which carries no `message`)
+    /// still deserializes instead of failing with a generic parse error.
+    #[serde(default)]
+    message: Option<ChatResponseMessage>,
+    /// Ollama can answer HTTP 200 with `{"error": "..."}` (unknown model,
+    /// model not loaded, OOM). Captured so the real cause is surfaced.
+    #[serde(default)]
+    error: Option<String>,
     #[serde(default)]
     prompt_eval_count: u32,
     #[serde(default)]
@@ -269,6 +276,7 @@ pub struct OpenAiClient {
 
 impl OpenAiClient {
     pub fn new(cfg: &Config) -> Result<Self> {
+        warn_if_insecure_endpoint(&cfg.llm_base_url);
         let http = Client::builder()
             .timeout(Duration::from_secs(cfg.llm_timeout_seconds))
             .build()
@@ -286,13 +294,15 @@ impl OpenAiClient {
     /// from Kotlin even though the desktop CLI now hits a local Ollama.
     /// Defaults: OMEN endpoint + `qwen3:8b`, 30s timeout.
     pub fn with_api_key(api_key: String) -> Result<Self> {
+        let base_url = "http://100.68.73.123:11434/v1".to_string();
+        warn_if_insecure_endpoint(&base_url);
         let http = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
             .context("failed to build HTTP client")?;
         Ok(Self {
             http,
-            base_url: "http://100.68.73.123:11434/v1".to_string(),
+            base_url,
             model: "qwen3:8b".to_string(),
             api_key,
         })
@@ -420,13 +430,23 @@ impl OpenAiClient {
                 .await
                 .context("failed to deserialise ChatResponse")?;
 
+            // A 200 response carrying an error envelope (wrong model name,
+            // etc.) is not retryable — surface the real cause instead of a
+            // confusing "failed to deserialise" further down.
+            if let Some(err) = chat.error {
+                anyhow::bail!("Ollama returned error: {err}");
+            }
+            let message = chat
+                .message
+                .context("Ollama response had neither `message` nor `error`")?;
+
             let tokens_in = chat.prompt_eval_count;
             let tokens_out = chat.eval_count;
             // Local LLM is free at runtime; cost stays zero so the
             // budget controller is a no-op without ripping it out.
             let cost_usd = 0.0;
 
-            let raw_content = chat.message.content;
+            let raw_content = message.content;
 
             let raw: FilterResponseRaw = match serde_json::from_str(&raw_content) {
                 Ok(r) => r,
@@ -466,6 +486,42 @@ impl OpenAiClient {
         }
 
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("all retries exhausted")))
+    }
+}
+
+/// Log a warning when sensitive screen/mic text (and any bearer token)
+/// would be sent to a non-local endpoint over plaintext HTTP. Loopback
+/// and Tailscale (100.64.0.0/10 CGNAT) hosts are exempt — they're the
+/// intended transport. Never refuses; a warning only, so existing setups
+/// keep working unchanged.
+fn warn_if_insecure_endpoint(base_url: &str) {
+    let url = base_url.trim();
+    let Some(rest) = url.strip_prefix("http://") else {
+        return; // https or another scheme — not plaintext.
+    };
+    let host = rest.split(['/', ':']).next().unwrap_or("");
+    let is_local = host == "localhost"
+        || host == "[::1]"
+        || host.starts_with("127.")
+        || is_tailscale_cgnat(host);
+    if !is_local {
+        tracing::warn!(
+            "llm_base_url uses plaintext http:// to a non-local host ({host}); \
+             screen/mic text and any API key are sent unencrypted. Prefer https \
+             or a loopback/Tailscale endpoint."
+        );
+    }
+}
+
+/// True for IPv4 literals in 100.64.0.0/10 (Tailscale / CGNAT range).
+fn is_tailscale_cgnat(host: &str) -> bool {
+    let octets: Vec<&str> = host.split('.').collect();
+    if octets.len() != 4 || !octets.iter().all(|o| o.parse::<u8>().is_ok()) {
+        return false;
+    }
+    match (octets[0].parse::<u8>(), octets[1].parse::<u8>()) {
+        (Ok(100), Ok(second)) => (64..=127).contains(&second),
+        _ => false,
     }
 }
 
@@ -518,6 +574,40 @@ mod tests {
         assert_eq!(back.parse_error.as_deref(), Some("boom"));
         assert_eq!(back.tokens_in, 10);
         assert_eq!(back.tokens_out, 20);
+    }
+
+    #[test]
+    fn chat_response_parses_ollama_error_envelope() {
+        // HTTP 200 with an error body must deserialize (message optional)
+        // so we can surface the real cause rather than a parse failure.
+        let body = r#"{"error":"model 'qwen3:8b' not found, try pulling it first"}"#;
+        let parsed: ChatResponse = serde_json::from_str(body).unwrap();
+        assert!(parsed.message.is_none());
+        assert_eq!(
+            parsed.error.as_deref(),
+            Some("model 'qwen3:8b' not found, try pulling it first")
+        );
+    }
+
+    #[test]
+    fn chat_response_parses_normal_message() {
+        let body = r#"{"message":{"content":"{}"},"prompt_eval_count":5,"eval_count":6}"#;
+        let parsed: ChatResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.message.unwrap().content, "{}");
+        assert_eq!(parsed.prompt_eval_count, 5);
+        assert_eq!(parsed.eval_count, 6);
+        assert!(parsed.error.is_none());
+    }
+
+    #[test]
+    fn cgnat_and_local_hosts_are_recognised() {
+        assert!(is_tailscale_cgnat("100.68.73.123")); // the OMEN default
+        assert!(is_tailscale_cgnat("100.64.0.1"));
+        assert!(is_tailscale_cgnat("100.127.255.255"));
+        assert!(!is_tailscale_cgnat("100.128.0.1")); // just outside /10
+        assert!(!is_tailscale_cgnat("100.63.0.1"));
+        assert!(!is_tailscale_cgnat("8.8.8.8"));
+        assert!(!is_tailscale_cgnat("not.an.ip"));
     }
 
     #[test]

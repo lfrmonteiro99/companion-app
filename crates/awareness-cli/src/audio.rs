@@ -3,7 +3,10 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-#[cfg(feature = "audio")]
+// Gated on `full` to match the cfg of the code that actually uses these
+// (`vad_loop` / `emit_chunk`); avoids an unused-import warning when only
+// the `audio` sub-feature is enabled without `full`.
+#[cfg(feature = "full")]
 use chrono::{DateTime, Utc};
 
 use crate::config::Config;
@@ -22,6 +25,9 @@ pub use awareness_core::types::AudioChunk;
 ///
 /// All cpal/webrtc-vad code behind #[cfg(feature = "full")].
 /// Without the feature: spawn a task that sleeps forever (no-op).
+// `return` is required: the two `#[cfg]` blocks are alternates, so the
+// full-feature branch can't be a bare tail expression.
+#[allow(clippy::needless_return)]
 pub async fn spawn_mic_capture(
     tx: mpsc::Sender<AudioChunk>,
     _cfg: Arc<Config>,
@@ -173,11 +179,12 @@ fn vad_loop(
             if is_voice {
                 if !in_speech {
                     in_speech = true;
-                    silence_frames = 0;
                     chunk_start = Utc::now();
                     accumulator.clear();
                     tracing::info!("VAD: speech started");
                 }
+                // Reset on every voiced frame (the per-speech-start reset
+                // above was redundant — this always runs in this branch).
                 silence_frames = 0;
                 accumulator.extend_from_slice(&frame);
             } else if in_speech {
@@ -193,12 +200,10 @@ fn vad_loop(
                     silence_frames = 0;
                     accumulator.clear();
                 }
-            } else if accumulator.len() >= HARD_SPLIT_SAMPLES {
-                // Hard split even without confirmed speech start.
-                emit_chunk(&tx, chunk_start, &accumulator);
-                accumulator.clear();
-                chunk_start = Utc::now();
             }
+            // No `else` branch: when not in speech the accumulator is
+            // already empty (cleared on every emit / speech start), so the
+            // old pre-speech hard-split path was dead code.
         }
 
         // Brief sleep to avoid busy-spinning.

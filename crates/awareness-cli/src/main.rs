@@ -312,7 +312,14 @@ async fn process_send(
     };
 
     let resp = match backend
-        .analyze(event, img_ref, &mem_str, &decision.reason, &profile_ctx, &matched)
+        .analyze(
+            event,
+            img_ref,
+            &mem_str,
+            &decision.reason,
+            &profile_ctx,
+            &matched,
+        )
         .await
     {
         Ok(r) => r,
@@ -404,11 +411,7 @@ async fn process_send(
     // citing memory, but curbing the source is more reliable than
     // asking the model not to.
     if resp.should_alert {
-        let trimmed: String = resp
-            .quick_message
-            .chars()
-            .take(80)
-            .collect::<String>();
+        let trimmed: String = resp.quick_message.chars().take(80).collect::<String>();
         memory.lock().await.push(MemoryEntry {
             timestamp: chrono::Utc::now(),
             app: event.app.clone(),
@@ -426,13 +429,19 @@ async fn process_send(
                 "flow_state: suppressing {} urgency alert during focus",
                 resp.urgency
             );
-        } else {
-            let _ = alert_tx.try_send(AlertPrompt {
+        } else if alert_tx
+            .try_send(AlertPrompt {
                 tick_id,
                 event: event.clone(),
                 gate_decision: decision.clone(),
                 api_response: resp.clone(),
-            });
+            })
+            .is_err()
+        {
+            // Eval loop is busy (e.g. user ignoring a 30s prompt) and the
+            // channel filled — surface the drop instead of losing the
+            // alert silently.
+            tracing::warn!("tick={tick_id} alert dropped: eval channel full");
         }
     }
 
@@ -551,8 +560,7 @@ async fn run(args: RunArgs) -> Result<()> {
                     a11y::A11yResult::Thin(h) => h.active_bbox,
                     a11y::A11yResult::None => None,
                 };
-                let focused_image =
-                    crop_to_active_window(&frame.image, frame.native_size, bbox);
+                let focused_image = crop_to_active_window(&frame.image, frame.native_size, bbox);
 
                 let (out, src) = match a11y_result {
                     a11y::A11yResult::Rich(out) => (out, "a11y"),
@@ -562,13 +570,21 @@ async fn run(args: RunArgs) -> Result<()> {
                         // from the hint so the event carries the correct
                         // window identity even though OCR generated the
                         // text.
-                        let ocr_input = focused_image.as_ref().unwrap_or(&frame.image);
-                        match ocr::extract_text(ocr_input, frame.captured_at) {
-                            Ok(mut out) => {
+                        // Tesseract is CPU-bound (~0.5–3s); run it on the
+                        // blocking pool so it doesn't stall the async
+                        // runtime (mirrors the whisper loop below). The
+                        // image is cloned so it can move into the task.
+                        let ocr_input = focused_image.as_ref().unwrap_or(&frame.image).clone();
+                        let captured_at = frame.captured_at;
+                        let ocr_result = tokio::task::spawn_blocking(move || {
+                            ocr::extract_text(&ocr_input, captured_at)
+                        })
+                        .await;
+                        match ocr_result {
+                            Ok(Ok(mut out)) => {
                                 if let a11y::A11yResult::Thin(hint) = other {
-                                    out.inferred_app_name = hint
-                                        .inferred_app_name
-                                        .or(out.inferred_app_name);
+                                    out.inferred_app_name =
+                                        hint.inferred_app_name.or(out.inferred_app_name);
                                     if !hint.title.is_empty() {
                                         out.title_bar_text = hint.title;
                                     }
@@ -576,8 +592,12 @@ async fn run(args: RunArgs) -> Result<()> {
                                 }
                                 (out, "ocr")
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 tracing::warn!("OCR: {e}");
+                                continue;
+                            }
+                            Err(e) => {
+                                tracing::warn!("OCR task failed: {e}");
                                 continue;
                             }
                         }
@@ -674,6 +694,18 @@ async fn run(args: RunArgs) -> Result<()> {
     // "emotional" gate reason (user wants immediate feedback on frustration).
     let mut last_api_call_at: Option<std::time::Instant> = None;
 
+    // SIGTERM (systemctl stop / kill) must persist state too — not only
+    // SIGINT (Ctrl-C). Best-effort: if registration fails we just won't
+    // catch SIGTERM.
+    let mut sigterm = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    {
+        Ok(s) => Some(s),
+        Err(e) => {
+            tracing::warn!("could not install SIGTERM handler: {e}");
+            None
+        }
+    };
+
     loop {
         tokio::select! {
             Some(event) = event_rx.recv() => {
@@ -738,23 +770,36 @@ async fn run(args: RunArgs) -> Result<()> {
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                // Drain any pending write-batch so mid-batch spends aren't
-                // lost to a crash between now and the next natural flush.
-                let mut b = budget.lock().await;
-                b.flush();
-                // Persist the user profile so app-usage counters from
-                // this session survive the next run. Best-effort: a
-                // failed save shouldn't block shutdown.
-                if let Err(e) = profile.lock().await.save(&profile_p) {
-                    tracing::warn!("user_profile save on shutdown: {e}");
+                tracing::info!("SIGINT received — shutting down");
+                break;
+            }
+            _ = async {
+                match sigterm.as_mut() {
+                    Some(s) => { s.recv().await; }
+                    None => std::future::pending::<()>().await,
                 }
-                println!(
-                    "\nShutdown. Ticks: {tick_id} | Cost: ${:.4} | Remaining: ${:.4}",
-                    b.spent(), b.remaining()
-                );
+            } => {
+                tracing::info!("SIGTERM received — shutting down");
                 break;
             }
         }
+    }
+
+    // Graceful shutdown for any exit path (SIGINT or SIGTERM): drain the
+    // budget write-batch so mid-batch spends aren't lost, and persist the
+    // user profile so this session's app-usage counters survive the next
+    // run. Best-effort — a failed save shouldn't block shutdown.
+    {
+        let mut b = budget.lock().await;
+        b.flush();
+        if let Err(e) = profile.lock().await.save(&profile_p) {
+            tracing::warn!("user_profile save on shutdown: {e}");
+        }
+        println!(
+            "\nShutdown. Ticks: {tick_id} | Cost: ${:.4} | Remaining: ${:.4}",
+            b.spent(),
+            b.remaining()
+        );
     }
 
     Ok(())

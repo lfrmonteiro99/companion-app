@@ -161,9 +161,9 @@ async fn handle_prompt(
                 }
             });
         }
-        Err(e) => tracing::warn!(
-            "notify-send spawn failed: {e}. Install libnotify-bin if missing."
-        ),
+        Err(e) => {
+            tracing::warn!("notify-send spawn failed: {e}. Install libnotify-bin if missing.")
+        }
     }
 
     tts::speak(quick_message, tts_config);

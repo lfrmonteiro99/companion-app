@@ -5,7 +5,9 @@ use image::DynamicImage;
 pub use awareness_core::types::OcrOutput;
 
 /// Extract text from a screen frame using Tesseract OCR.
-#[allow(dead_code)]
+// `needless_return`: the cfg branches are alternates, so the ocr-feature
+// branch needs an explicit `return`.
+#[allow(dead_code, clippy::needless_return)]
 pub fn extract_text(image: &DynamicImage, captured_at: DateTime<Utc>) -> Result<OcrOutput> {
     #[cfg(feature = "ocr")]
     {

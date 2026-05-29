@@ -17,10 +17,9 @@ use awareness_core::types::ContextEvent;
 use chrono::Utc;
 
 fn cfg() -> Config {
-    let base_url = std::env::var("AWARENESS_LLM_BASE_URL")
-        .unwrap_or_else(|_| DEFAULT_LLM_BASE_URL.into());
-    let model =
-        std::env::var("AWARENESS_LLM_MODEL").unwrap_or_else(|_| DEFAULT_LLM_MODEL.into());
+    let base_url =
+        std::env::var("AWARENESS_LLM_BASE_URL").unwrap_or_else(|_| DEFAULT_LLM_BASE_URL.into());
+    let model = std::env::var("AWARENESS_LLM_MODEL").unwrap_or_else(|_| DEFAULT_LLM_MODEL.into());
     Config {
         openai_api_key: String::new(),
         llm_base_url: base_url,
@@ -116,7 +115,10 @@ async fn main() -> anyhow::Result<()> {
                 "",
             ),
         };
-    println!("scenario={} matched_interests={:?}", scenario, matched_interests);
+    println!(
+        "scenario={} matched_interests={:?}",
+        scenario, matched_interests
+    );
 
     let t0 = std::time::Instant::now();
     let resp = client

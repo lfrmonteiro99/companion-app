@@ -82,9 +82,7 @@ async fn capture_loop(tx: mpsc::Sender<ScreenFrame>, cfg: Arc<Config>) {
                         );
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            "ScreenCast failed: {e}. Trying Screenshot portal next."
-                        );
+                        tracing::warn!("ScreenCast failed: {e}. Trying Screenshot portal next.");
                     }
                 }
             }
@@ -174,22 +172,30 @@ async fn capture_via_sidecar() -> Result<Vec<u8>> {
 
     // gnome-screenshot (GNOME/XWayland)
     // Needs DISPLAY for XWayland; default to :0 if not set.
-    const TMP_PATH: &str = "/tmp/awareness_shot.png";
+    // Write to a per-process path under the user-private XDG runtime dir
+    // (0700, /run/user/<uid>) rather than a predictable world-readable
+    // /tmp/awareness_shot.png — that was a symlink-clobber / screen-leak
+    // vector on multi-user hosts, and the file was never cleaned up.
+    let tmp_path = sidecar_screenshot_path();
     let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
     // -w = active window only (not whole desktop). Much smaller image,
     // content-relevant OCR, title bar gives us the app name.
     let gs_result = Command::new("gnome-screenshot")
-        .args(["-w", "-f", TMP_PATH])
+        .args(["-w", "-f"])
+        .arg(&tmp_path)
         .env("DISPLAY", &display)
         .output()
         .await;
 
     match gs_result {
         Ok(output) if output.status.success() => {
-            let bytes = tokio::fs::read(TMP_PATH).await?;
+            let bytes = tokio::fs::read(&tmp_path).await?;
+            // Don't leave a screenshot of the user's screen on disk.
+            let _ = tokio::fs::remove_file(&tmp_path).await;
             Ok(bytes)
         }
         Ok(output) => {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("gnome-screenshot failed: {}", stderr);
         }
@@ -197,6 +203,16 @@ async fn capture_via_sidecar() -> Result<Vec<u8>> {
             anyhow::bail!("gnome-screenshot spawn error: {}", e);
         }
     }
+}
+
+/// Per-process screenshot scratch path. Prefers `$XDG_RUNTIME_DIR`
+/// (user-owned, mode 0700) and falls back to the system temp dir. The PID
+/// keeps concurrent instances from clobbering each other's capture.
+fn sidecar_screenshot_path() -> std::path::PathBuf {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    dir.join(format!("awareness_shot_{}.png", std::process::id()))
 }
 
 fn is_command_not_found(e: &std::io::Error) -> bool {

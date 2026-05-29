@@ -2,7 +2,7 @@
 // `crate::<mod>` paths (inside this crate's Linux-specific modules and in
 // tests) and downstream users keep working unchanged.
 pub use awareness_core::{
-    api, api_vision, backend, budget, config, config_file, dedup, flow, gate, jsonl, memory,
+    api, backend, budget, config, config_file, dedup, flow, gate, jsonl, memory, user_profile,
 };
 
 pub mod a11y;

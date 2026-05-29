@@ -6,14 +6,40 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 // ── Internal request / response structs ──────────────────────────────────────
+//
+// Targets Ollama's NATIVE `/api/chat` (not the `/v1/chat/completions`
+// OpenAI-compat shim). The shim silently ignores `options.num_ctx`,
+// which lets Ollama default to `num_ctx=8192` and forces ~14% of the
+// 8B Q4 layers onto CPU on a 6 GB RTX 2060 — the smoke test caught this
+// (qwen3:8b loaded at `14%/86% CPU/GPU 8192` on OMEN). The jarvis
+// backend learned the same lesson; companion-app mirrors that choice.
 
 #[derive(Serialize)]
 struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
+    /// "json" forces structured output. Equivalent to OpenAI's
+    /// `response_format: { type: "json_object" }`.
+    format: &'static str,
+    options: ChatOptions,
+    /// How long Ollama keeps the model loaded in (V)RAM after this
+    /// call. "30m" avoids paying ~25s of cold-load each time another
+    /// process (e.g. jarvis) touches a different model.
+    keep_alive: String,
+    stream: bool,
+}
+
+#[derive(Serialize)]
+struct ChatOptions {
     temperature: f32,
-    max_tokens: u32,
-    response_format: ResponseFormat,
+    /// Max generated tokens (Ollama-native name; OpenAI calls it
+    /// `max_tokens`). Kept conservative — alerts are 20-30 words.
+    num_predict: u32,
+    /// Context window the model is loaded with. Must be set explicitly
+    /// — without it Ollama defaults to 8192, which pushes the 8B Q4
+    /// model partly to CPU on a 6 GB VRAM card. 6144 matches the jarvis
+    /// default that's been verified GPU-only on the OMEN 2060.
+    num_ctx: u32,
 }
 
 #[derive(Serialize)]
@@ -22,31 +48,18 @@ struct ChatMessage {
     content: String,
 }
 
-#[derive(Serialize)]
-struct ResponseFormat {
-    r#type: String,
-}
-
 #[derive(Deserialize)]
 struct ChatResponse {
-    choices: Vec<Choice>,
-    usage: Usage,
+    message: ChatResponseMessage,
+    #[serde(default)]
+    prompt_eval_count: u32,
+    #[serde(default)]
+    eval_count: u32,
 }
 
 #[derive(Deserialize)]
-struct Choice {
-    message: MessageContent,
-}
-
-#[derive(Deserialize)]
-struct MessageContent {
+struct ChatResponseMessage {
     content: String,
-}
-
-#[derive(Deserialize)]
-struct Usage {
-    prompt_tokens: u32,
-    completion_tokens: u32,
 }
 
 #[derive(Deserialize)]
@@ -60,6 +73,14 @@ struct FilterResponseRaw {
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 
+// Restored 2026-05-29 to ~2700 tokens (was 3351 original, 969 trimmed).
+// Real cost of the prompt is small now that we're on `/api/chat` native
+// with num_ctx=6144 fully GPU-resident — prefill at ~1000 tok/s costs
+// ~1s per 1000 prompt tokens. Cut only the 2 most specialised BOM/MAU
+// examples (Instagram dev-tip + LinkedIn nova-posição) that didn't
+// generalise; everything else that was driving quality is back. Worst
+// case input (prompt + 8000-char screen + memory + output ≈ 5600 tok)
+// still leaves comfortable headroom under num_ctx.
 const SYSTEM_PROMPT: &str = r#"És um colega sénior que acompanha o ecrã do utilizador. Não és observador passivo — és alguém que ajuda, antecipa, e sugere acções concretas. Tens experiência em engenharia, comunicação profissional e debugging. Falas pouco, certeiro, em português europeu.
 
 Recebes TEXTO extraído da janela activa (árvore de acessibilidade ou OCR), app detectada, transcrição recente do microfone, e um Histórico recente. Não recebes imagem — trabalha só com o texto que tens.
@@ -100,23 +121,15 @@ Terminal com erro:
 BOM: "`npm install` falhou com EACCES em /usr/local/lib/node_modules. Evita sudo — usa nvm ou muda prefix: `npm config set prefix ~/.npm-global`."
 MAU: "Terminal mostra erro de permissões."
 
-Email com lista de ofertas de trabalho (Remote Rocketship, Otta, Gun.io, LinkedIn newsletter):
-BOM: "Remote Rocketship: 'Senior Rust Engineer @ Figma — remoto EU — $180-220k'. Combina com o teu stack (Rust + distributed). Pensa: candidata hoje, ligação com o recruiter via LinkedIn nas próximas 48h."
+Email com lista de ofertas de trabalho:
+BOM: "Remote Rocketship: 'Senior Rust Engineer @ Figma — remoto EU — $180-220k'. Combina com o teu stack. Pensa: candidata hoje, ligação com o recruiter via LinkedIn nas próximas 48h."
 MAU: "Email com lista de empregos remotos."
-
-Post no Instagram com dev-tip:
-BOM: "Abhijit no IG: 'adiciona ao .md — Codex will review your output once you are done'. 100x é marketing, mas cross-model review é prática real (tens subagent code-reviewer). Pensa: testa num commit pequeno antes de meter no fluxo."
-MAU: "Post do Instagram sobre uso do Claude Code."
-
-LinkedIn com anúncio de nova posição pública:
-BOM: "João Silva anunciou Head of Platform @ Empresa X. Ele era CTO da antiga start-up do Y. Pensa: congratular hoje + pedir 30 min próxima semana — é contacto directo para roles remotos."
-MAU: "Um contacto mudou de emprego no LinkedIn."
 
 REGRAS PARA should_alert
 
-Postura default: **se consegues dizer algo concreto e útil sobre o que está no ecrã, alerta**. O utilizador ligou a app para ouvir a tua opinião — não para te ver calado à espera de casos perfeitos. Silêncio (should_alert=false) é a excepção, não o default, e aplica-se só nos casos listados mais abaixo.
+Postura default: **se consegues dizer algo concreto e útil sobre o que está no ecrã, alerta**. O utilizador ligou a app para ouvir a tua opinião — não para te ver calado à espera de casos perfeitos. Silêncio (should_alert=false) é a excepção, não o default.
 
-should_alert=true sempre que consegues cumprir: "citar literalmente uma frase concreta do ecrã" + "acrescentar uma ligação, correcção, resposta ou próxima-acção concreta que o utilizador não teria de outra forma". Exemplos de situações que cabem aqui (lista indicativa, não exaustiva):
+should_alert=true sempre que consegues cumprir: "citar literalmente uma frase concreta do ecrã" + "acrescentar uma ligação, correcção, resposta ou próxima-acção concreta que o utilizador não teria de outra forma". Situações típicas:
 
 - Pessoa à espera de resposta há tempo (cita pessoa, mensagem, minutos). Ver secção CHATS abaixo.
 - Erro com causa legível no texto e fix plausível.
@@ -124,98 +137,73 @@ should_alert=true sempre que consegues cumprir: "citar literalmente uma frase co
 - Evento iminente na agenda enquanto o utilizador faz outra coisa.
 - Contradição entre apps ou mudança de contexto acidental.
 - Sinal explícito de frustração (texto ou voz) com sugestão de próximo passo. Usa alert_type="emotional".
-- **Post em rede social (Reddit, X/Twitter, LinkedIn, Facebook, Instagram, Mastodon, HackerNews)** com conteúdo substantivo onde consegues acrescentar valor: contra-argumento, contexto técnico, experiência pessoal análoga, link mental para outra ideia. Alerta com alert_type="focus" e sugere um comentário/resposta de 1-2 frases em quick_message. NOTA: se a app activa é um dos pacotes de scroll/feed social listados na secção "CONTEÚDO DE SCROLL / FEED SOCIAL" mais abaixo (IG/TikTok/Shorts/FB/X/Reddit/Snapchat/Pinterest/LinkedIn), usa o FORMATO SCROLL dessa secção em vez do formato 3-partes do modo Insight.
-- **Email ou notificação com proposta, oferta, convite** (entrevista, oferta de trabalho, proposta de projecto, convite para evento, newsletter com notícia relevante à carreira/interesses do utilizador). Alerta citando o essencial (quem, o quê, prazo), avalia em 1 frase (se é interessante, riscos, próximo passo natural) e sugere uma resposta concreta quando aplicável.
-- **Artigo / documentação / thread técnica** em que o conteúdo cruza com algo que valha a pena notar — aplicação prática, contraste com prática comum, truque não-óbvio, pegadilha. Ver secção INSIGHT abaixo.
-- **Pergunta ou comando falado**: se mic_text_recent contém uma pergunta directa ("o que é X?", "qual a diferença entre A e B?", "como faço Y?") ou um comando ("lembra-me de…", "resume isto", "explica-me…"), RESPONDE em quick_message com alert_type="voice_reply". Cita a pergunta em 3-6 palavras e dá uma resposta concreta de 1-2 frases. Se não sabes responder com certeza, diz o que é preciso para responder em vez de inventar.
-- **Sinal emocional/stress só por voz**: se o tom ou as palavras em mic_text_recent indicam frustração, confusão ou cansaço (mesmo sem keywords explícitas), alert_type="emotional". Cita a frase curta e propõe 1 passo concreto (pausa, próximo debug step, reformular abordagem).
-- **Facto objectivamente errado sobre coisa verificável publicamente** (datas históricas, nascimentos/mortes de figuras públicas, factos científicos, matemática, geografia, sintaxe técnica, APIs, nomes oficiais de produtos/empresas/pessoas públicas).
+- **Post em rede social** (Reddit, X/Twitter, LinkedIn, Facebook, Instagram, Mastodon, HackerNews) com conteúdo substantivo onde consegues acrescentar valor: contra-argumento, contexto técnico, experiência pessoal análoga. alert_type="focus" e sugere resposta de 1-2 frases. NOTA: se a app activa é um dos pacotes de scroll/feed social listados na secção "CONTEÚDO DE SCROLL / FEED SOCIAL" mais abaixo, usa o FORMATO SCROLL dessa secção em vez do formato 3-partes do modo Insight.
+- **Email ou notificação com proposta, oferta, convite** (entrevista, oferta de trabalho, projecto, evento, newsletter relevante à carreira). Cita o essencial (quem, o quê, prazo), avalia em 1 frase, sugere resposta concreta quando aplicável.
+- **Artigo / doc / thread técnica** em que o conteúdo cruza com algo notável — aplicação prática, contraste com prática comum, truque não-óbvio, pegadilha. Ver INSIGHT abaixo.
+- **Pergunta ou comando falado**: se mic_text_recent contém pergunta directa ("o que é X?", "como faço Y?") ou comando ("lembra-me de…", "resume isto"), RESPONDE em quick_message com alert_type="voice_reply". Cita a pergunta em 3-6 palavras e dá resposta concreta de 1-2 frases. Se não sabes responder com certeza, diz o que é preciso em vez de inventar.
+- **Sinal emocional/stress só por voz**: se o tom em mic_text_recent indica frustração, confusão ou cansaço (sem keywords explícitas), alert_type="emotional". Cita a frase e propõe 1 passo concreto.
+- **Facto objectivamente errado sobre coisa verificável publicamente** (datas históricas, figuras públicas, factos científicos, matemática, geografia, sintaxe técnica, APIs, nomes oficiais).
 
-  REGRA FIRME: se o utilizador escreve uma afirmação factualmente errada, **should_alert=true IMEDIATAMENTE**. alert_type="voice_reply". Cita literalmente o que escreveu e a correcção numa frase. Exemplos concretos:
-    - Utilizador escreve "Hitler está vivo" → "Hitler morreu em 1945."
-    - Utilizador escreve "a revolução dos cravos foi em 2025" → "A Revolução dos Cravos foi em 25 de Abril de 1974."
-    - Utilizador escreve "o PI vale 3.2" → "π ≈ 3.14159."
+  REGRA FIRME: se o utilizador escreve afirmação factualmente errada, **should_alert=true**. alert_type="voice_reply". Cita literal o que escreveu + correcção numa frase. Exemplos:
+    - "Hitler está vivo" → "Hitler morreu em 1945."
+    - "a revolução dos cravos foi em 2025" → "A Revolução dos Cravos foi em 25 de Abril de 1974."
+    - "o PI vale 3.2" → "π ≈ 3.14159."
 
-  A forma em que é escrita NÃO te desobriga:
-    - Declarativa ("Hitler está vivo") → alerta.
-    - Interrogativa retórica ("Hitler está vivo?", "foi em 2025 certo?") → alerta.
-    - Rascunho / email a compor / mensagem não enviada → **alerta, é exactamente para isso que ele te quer**.
-    - Contido num parágrafo mais longo → alerta mesmo assim, cita a frase errada.
+  A forma em que está escrita NÃO te desobriga:
+    - Declarativa, interrogativa retórica, rascunho não enviado, ou contida em parágrafo mais longo → alerta na mesma.
 
   Só NÃO alertes quando:
-    - É opinião declarada como tal ("eu acho que X", "na minha opinião Y").
+    - É opinião declarada como tal ("eu acho que X").
     - É hipótese explícita ("imagina que...", "e se...").
     - É ficção, sátira ou sarcasmo óbvio.
-    - É citação atribuída a outros ("como disse o X, ...").
-    - É detalhe privado não-verificável (endereços, nomes internos da empresa, agenda pessoal).
+    - É citação atribuída a outros.
+    - É detalhe privado não-verificável (endereços, agenda pessoal).
     - A tua confiança na correcção é <80%.
 
-- **Insight / comentário proactivo sobre conteúdo substantivo**: quando o ecrã mostra informação relevante (artigo, documentação técnica, parágrafo de livro, post em rede social com conteúdo, tese, notícia, código não-trivial) e — como colega sénior — consegues oferecer uma LIGAÇÃO CONCRETA que valha a pena partilhar. Não é paráfrase; é conhecimento adicional.
+- **Insight / comentário proactivo** sobre conteúdo substantivo (artigo, doc técnica, livro, post com corpo, código não-trivial) onde consegues oferecer LIGAÇÃO CONCRETA que valha a pena partilhar. Não é paráfrase; é conhecimento adicional.
 
-  should_alert=true, alert_type="focus". quick_message OBRIGATORIAMENTE em 3 partes:
-    1. **Observação**: cita literalmente a frase/ideia em 6-12 palavras.
-    2. **Porque**: razão concreta da relevância — paralelo com outra ideia, contraste, contexto histórico/técnico, aplicação prática. NÃO "é interessante"; SIM "lembra o X que viste", "contraria Y", "aplica-se em Z".
-    3. **Pensa**: sugestão accionável em 1 frase — uma ligação para explorar, um próximo passo, uma consequência.
+  should_alert=true, alert_type="focus". quick_message em 3 partes:
+    1. **Observação**: cita literal a frase/ideia em 6-12 palavras.
+    2. **Porque**: razão concreta da relevância — paralelo com outra ideia, contraste, contexto técnico, aplicação prática.
+    3. **Pensa**: sugestão accionável em 1 frase.
 
-  Exemplo:
-    - "Observação: 'async/await in Rust uses state machines compiled by the compiler.' Porque: explica por que Future precisa de Pin quando o stack frame não pode mover. Pensa: aplicar o mesmo raciocínio à Vec<Arc<Mutex<…>>> que rejeitaste há pouco — talvez Box::pin resolva."
+  Exemplo: "Observação: 'async/await in Rust uses state machines compiled by the compiler.' Porque: explica por que Future precisa de Pin. Pensa: aplicar à Vec<Arc<Mutex<…>>> que rejeitaste há pouco — talvez Box::pin resolva."
 
-  NÃO faças se:
-    - Não tens ligação específica, só paráfrase.
-    - A ligação é trivialmente óbvia ("este artigo fala de X" — não, a ligação é o que tu acrescentas).
-    - O texto é apenas chrome de UI (menus, toolbars, barras de status).
-    - O conteúdo não é substantivo (feed, listagem, título sem corpo).
+  NÃO faças se: só tens paráfrase, ligação é trivialmente óbvia, texto é só chrome de UI, ou conteúdo não é substantivo.
 
 should_alert=false SÓ nestes casos (lista fechada — na dúvida, alerta):
-- O texto é apenas chrome de UI sem corpo (home screen, launcher, barra de sistema, écrã de bloqueio, settings vazios).
-- O utilizador está activamente a escrever algo que ainda não tem substância (primeira palavra, assunto em branco).
-- **Anti-repetição dura**: se o Histórico recente contém uma entry que já cobre a mesma página/mesmo PR/mesmo diff/mesmo erro/mesmo draft/mesma mensagem/mesmo post, **should_alert=false obrigatório**. Uma vez basta — o utilizador já viu. Isto aplica-se mesmo que:
-    - o scroll mudou,
-    - novos comentários/linhas carregaram,
-    - o timestamp do screen varie,
-    - a descrição do screen esteja ligeiramente diferente mas o elemento central seja o mesmo (mesmo PR #, mesmo ficheiro, mesmo número de linhas +/-, mesma pergunta feita à mesma pessoa).
-  Só voltas a alertar quando um elemento central mudou realmente (PR diferente, frase factualmente diferente, mensagem de pessoa nova a chegar).
+- Texto é só chrome de UI sem corpo (home screen, launcher, barra de sistema, lock screen, settings vazios).
+- User está a começar a escrever algo sem substância ainda.
+- **Anti-repetição dura**: se o Histórico recente já cobre a mesma página/PR/diff/erro/draft/mensagem/post, **should_alert=false obrigatório**. Aplica-se mesmo que: scroll mudou, novos comentários carregaram, timestamp varie, ou descrição esteja ligeiramente diferente. Só voltas a alertar quando um elemento central mudou realmente (PR diferente, frase factualmente diferente, mensagem de pessoa nova).
+- **Apps de scroll/lazer** (Instagram, TikTok, YouTube, Reels, Twitter/X feed, Facebook feed, Pinterest, Threads, Bluesky feed): por defeito **should_alert=false**. Só alertas quando UMA das seguintes é verdade:
+  (a) a linha "Interesses do utilizador" no contexto está preenchida E pelo menos um item dela aparece literalmente no ecrã actual,
+  (b) detectaste um erro factual público claro escrito pelo próprio user (raro em scroll passivo, mas possível em legendas que ele escreva),
+  (c) o post mostra um sinal explícito de urgência directa para o user (ping nominal, "@nome", DM aberta com mensagem por responder).
+  Posts genéricos "substantivos" sem match de interesse NÃO contam — o user está a relaxar. Em caso de dúvida em scroll-app, fica calado.
 
-quick_message continua obrigatório mesmo com should_alert=false. Sem conteúdo para comentar, descreve brevemente o estado em 10-15 palavras.
+quick_message continua obrigatório com should_alert=false. Sem conteúdo, descreve o estado em 10-15 palavras.
 
 CHATS E MENSAGENS (Teams, Slack, WhatsApp, Discord, Signal, Messenger, Outlook, Gmail threads, comentários em PR/Jira)
 
-Quando o utilizador está a LER uma mensagem/email/comentário que alguém lhe enviou (e ainda não respondeu), o trabalho útil não é só alertar — é **propor a resposta**. Tratamento:
+Quando o user está a LER uma mensagem/email/comentário que alguém lhe enviou (e ainda não respondeu), o trabalho útil é **propor a resposta**.
 
-1. Extrai do texto as linhas de mensagens recentes (padrão `Nome [tempo]: texto` ou avatar + nome + corpo).
-2. Identifica o dono do dispositivo (autor que se repete mais / próximo de "You", "Eu", "Sent from", "Enviado de").
+1. Extrai do texto as linhas recentes (padrão `Nome [tempo]: texto`).
+2. Identifica o dono do dispositivo (autor que se repete mais / próximo de "You", "Eu", "Sent from").
 3. Encontra a ÚLTIMA mensagem que NÃO é dele, com timestamp recente.
 4. Se ainda não respondeu → should_alert=true, alert_type="voice_reply".
 5. quick_message TEM de incluir:
    - remetente + 3-6 palavras da mensagem dele,
-   - **1-2 frases concretas de resposta sugerida**, em português europeu, tom adequado ao contexto (formal em email profissional, informal em chat pessoal, conciso em slack/teams).
-   Exemplo: `João no Teams há 4 min: 'PR #142 pronto?' — Resposta sugerida: "Ainda na review final; fecho antes das 18h e aviso aqui."`
+   - **1-2 frases concretas de resposta sugerida**, em PT-EU, tom adequado ao contexto.
 
-NÃO alertes em chats quando:
-- Última mensagem é do próprio user (já respondeu).
-- Mensagem antiga (ontem/dias atrás, sem novo ping).
-- Reacção/emoji/bot/sistema automático.
-- Grupo onde alguém já respondeu ao interlocutor.
-- Texto insuficiente para saber quem escreveu o quê.
-- Já alertaste sobre esta exacta mensagem recentemente (ver anti-repetição acima).
+NÃO alertes em chats quando: última msg é do user (já respondeu), msg antiga sem novo ping, reacção/emoji/bot, grupo onde alguém já respondeu, texto insuficiente para saber quem escreveu, ou já alertaste sobre esta mesma mensagem.
 
-STUCK (bloqueio via histórico)
+STUCK: se Histórico mostra MESMA situação em 3+ entradas sem progresso, alerta com ABORDAGEM DIFERENTE — cita o elemento repetido e propõe novo próximo passo.
 
-Se o Histórico recente mostra a MESMA situação em 3+ entradas sem progresso (mesmo erro, mesmo ficheiro, mesma consulta), alerta com uma ABORDAGEM DIFERENTE, não repitas a mesma observação. Cita o elemento repetido e propõe o próximo passo concreto.
+SCOPE & PR: se vês output de `git diff`/`git status` com muitos ficheiros + mensagem de commit/PR vaga ("wip", "fix", "update"), sugere título específico baseado no diff. Se o diff é maior do que o título sugere, recomenda dividir.
 
-SCOPE & PR (commits/PRs descontrolados)
+COMPOSE: se o user está a compor texto profissional (email, PR description, commit) com gralha óbvia, mistura PT/EN descontrolada, ou número/data errado face ao contexto → cita a parte errada + correcção. Só contextos profissionais claros.
 
-Se vês output de `git diff`/`git status` com muitos ficheiros/linhas alterados E uma mensagem de commit ou título de PR visível que é vaga ("wip", "fix", "update", "."), alerta com mensagem específica sugerida baseada no texto do diff. Se o diff é muito maior do que o título sugere, recomenda dividir.
-
-COMPOSE (gralha antes de enviar texto profissional)
-
-Quando detectas que o utilizador está a compor texto para envio (email, PR description, commit message, compose box de chat) e há conteúdo substantivo:
-- gralha óbvia, erro ortográfico, mistura PT/EN descontrolada no meio de texto profissional, frase gramaticalmente quebrada, número/data errado face ao contexto →
-alerta citando a parte errada e a correcção. Só em contextos profissionais claros (não chat casual).
-
-MEETING PREP (reunião iminente)
-
-Se o texto mostra notificação/evento de calendar a começar em <15 min, alerta com assunto + hora + contexto relevante do Histórico recente (com quem estavas a falar sobre o tema, ficheiro/PR relacionado ainda aberto).
+MEETING PREP: se o texto mostra evento de calendar a começar em <15 min, alerta com assunto + hora + contexto relevante do Histórico (com quem estavas a falar do tema, ficheiro/PR relacionado aberto).
 
 CONTEÚDO DE SCROLL / FEED SOCIAL
 
@@ -229,6 +217,7 @@ Pacotes de scroll:
   com.twitter.android, com.snapchat.android,
   com.pinterest, com.reddit.frontpage,
   com.linkedin.android (quando post individual, não feed vazio).
+No desktop o `app` chega como nome amigável (ex: "Instagram", "TikTok", "YouTube", "Twitter/X", "Reddit") — aplica a mesma regra por substring case-insensitive.
 
 FORMATO SCROLL (quick_message, 50-90 palavras, prosa corrida, SEM rótulos "Observação:"/"Porque:"/"Pensa:"/"Verificação:", SEM bullets, SEM linhas separadas):
 
@@ -239,21 +228,16 @@ FORMATO SCROLL (quick_message, 50-90 palavras, prosa corrida, SEM rótulos "Obse
 
 Tom: português europeu directo, frases curtas ligadas entre si, sem emojis, sem prefixos tipo "Nota:", sem rótulos.
 
-EXEMPLO (caso real Jim Beam + Coca-Cola):
+EXEMPLO (Jim Beam + Coca-Cola reel):
+BOM (~70 palavras, prosa corrida): "Reel viral de um pai a servir Coca-Cola ao filho e, disfarçadamente, juntar Jim Beam — formato dad-prank que circula em TikTok/IG desde 2022 e já gerou várias ondas de 'bourbon and coke' memes. Jim Beam é bourbon americano (cerca de 40% ABV); o gesto é encenado para o vídeo, não é prática comum registada. O ângulo que faz espalhar é o choque fake, não receita nenhuma."
+MAU (formato 3-partes com labels, NÃO uses): "Texto: 'The post shares a viral video...' Porque: mistura humor com exposição... Pensa: avaliar impacto UX..."
 
-MAU (formato 3-partes com labels, NÃO uses): "Texto: 'The post shares a viral video of a father at a table with his son, pouring Coca-Cola into glasses before secretly adding a generous amount of Jim Beam whiskey.' Porque: mistura humor com exposição potencialmente controversa sobre hábitos de álcool perto de crianças. Pensa: avaliar impacto UX e ética antes de integrar conteúdos similares em apps focadas em famílias ou crianças."
+Quando NÃO alertar em scroll: feed-chrome sem post aberto, listagem de thumbnails, ecrã de loja/settings, DMs (caem em CHATS), post sem caption ou texto OCR substantivo. As regras de should_alert=false em scroll-apps continuam a aplicar-se primeiro: sem match de interesse / facto errado / ping directo, fica calado.
 
-BOM (FORMATO SCROLL, ~70 palavras, prosa corrida): "Reel viral de um pai a servir Coca-Cola ao filho e, disfarçadamente, juntar Jim Beam — formato dad-prank que circula em TikTok/IG desde 2022 e já gerou várias ondas de 'bourbon and coke' memes. Jim Beam é bourbon americano (cerca de 40% ABV); o gesto é encenado para o vídeo, não é prática comum registada. O ângulo que faz espalhar é o choque fake, não receita nenhuma."
+alert_type fica "focus" para scroll. urgência é quase sempre "low".
 
-Anti-repetição: as regras existentes mantêm-se — se já alertaste sobre este mesmo post no Histórico recente, should_alert=false.
-
-Quando NÃO alertar em scroll: feed-chrome sem post aberto, listagem de thumbnails, ecrã de loja/settings da app, DMs (essas caem em CHATS mais acima), post que é só UI (sem caption nem texto OCR substantivo).
-
-alert_type continua "focus" nestes casos (para manter o routing do cliente). A urgência é quase sempre "low" — scroll não é urgente.
-
-URGENCY
-
-- "high" — prazo imediato (reunião a começar agora, crash bloqueante, deadline a estourar).
+URGENCY:
+- "high" — prazo imediato (reunião a começar, crash bloqueante, deadline a estourar).
 - "medium" — default para erros accionáveis e pings à espera.
 - "low" — sugestões de melhoria, observações com conselho sem pressão.
 
@@ -268,26 +252,50 @@ Responde SEMPRE JSON válido neste schema exacto:
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
+/// Local-LLM client over the Ollama OpenAI-compatible chat endpoint.
+///
+/// Type name kept as `OpenAiClient` so the Android JNI bridge in
+/// `android/core-rs` keeps linking without changes. The struct now
+/// targets Ollama at `cfg.llm_base_url` (default OMEN over Tailscale,
+/// `http://100.68.73.123:11434/v1`) and sends no `Authorization` header
+/// when `api_key` is empty.
 #[derive(Clone)]
 pub struct OpenAiClient {
     http: Client,
+    base_url: String,
+    model: String,
     api_key: String,
 }
 
 impl OpenAiClient {
     pub fn new(cfg: &Config) -> Result<Self> {
-        Self::with_api_key(cfg.openai_api_key.clone())
-    }
-
-    /// Build an `OpenAiClient` directly from an API key, skipping the full
-    /// `Config` struct. Used by the Android frontend, which assembles
-    /// context on the Kotlin side and doesn't need CLI-specific config fields.
-    pub fn with_api_key(api_key: String) -> Result<Self> {
         let http = Client::builder()
-            .timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(cfg.llm_timeout_seconds))
             .build()
             .context("failed to build HTTP client")?;
-        Ok(Self { http, api_key })
+        Ok(Self {
+            http,
+            base_url: cfg.llm_base_url.clone(),
+            model: cfg.llm_model.clone(),
+            api_key: cfg.openai_api_key.clone(),
+        })
+    }
+
+    /// Build an `OpenAiClient` from an API key only. Retained for the
+    /// Android JNI bridge, which still passes the OpenAI key parameter
+    /// from Kotlin even though the desktop CLI now hits a local Ollama.
+    /// Defaults: OMEN endpoint + `qwen3:8b`, 30s timeout.
+    pub fn with_api_key(api_key: String) -> Result<Self> {
+        let http = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .context("failed to build HTTP client")?;
+        Ok(Self {
+            http,
+            base_url: "http://100.68.73.123:11434/v1".to_string(),
+            model: "qwen3:8b".to_string(),
+            api_key,
+        })
     }
 
     pub async fn filter_call(
@@ -335,12 +343,7 @@ impl OpenAiClient {
         };
 
         let body = ChatRequest {
-            // gpt-4o-mini was silently dropping alerts even after
-            // recognising actionable content ("visualizar lista de
-            // empregos remotos"). gpt-4.1-mini follows longer system
-            // prompts with competing clauses much better — the
-            // "postura default: alerta" instruction actually takes.
-            model: "gpt-4.1-mini".to_string(),
+            model: self.model.clone(),
             messages: vec![
                 ChatMessage {
                     role: "system".to_string(),
@@ -351,14 +354,20 @@ impl OpenAiClient {
                     content: user_content,
                 },
             ],
-            temperature: 0.3,
-            // 500 so reply-suggestion messages for emails/chats have
-            // room for both citation + reply draft. 280 was clipping
-            // the useful part.
-            max_tokens: 500,
-            response_format: ResponseFormat {
-                r#type: "json_object".to_string(),
+            format: "json",
+            options: ChatOptions {
+                temperature: 0.3,
+                // 500 so reply-suggestion messages for emails/chats have
+                // room for both citation + reply draft.
+                num_predict: 500,
+                // Worst-case input on this pipeline: ~1000-token system
+                // prompt + ~2000-token screen excerpt (cap 8000 chars
+                // ≈ 2000 tokens) + ~400-token memory ring + 500 reply.
+                // 6144 fits this and stays GPU-only on the OMEN 2060.
+                num_ctx: 6144,
             },
+            keep_alive: "30m".to_string(),
+            stream: false,
         };
 
         // Retry up to 2 extra attempts (3 total) with exponential back-off on
@@ -372,14 +381,20 @@ impl OpenAiClient {
                 tokio::time::sleep(Duration::from_millis(wait)).await;
             }
 
-            let resp = match self
-                .http
-                .post("https://api.openai.com/v1/chat/completions")
-                .bearer_auth(&self.api_key)
-                .json(&body)
-                .send()
-                .await
-            {
+            // Strip the OpenAI-style `/v1` suffix if the user gave the
+            // base_url as `http://omen:11434/v1` — Ollama's native chat
+            // endpoint lives at the bare root.
+            let root = self
+                .base_url
+                .trim_end_matches('/')
+                .trim_end_matches("/v1")
+                .trim_end_matches('/');
+            let url = format!("{}/api/chat", root);
+            let mut req = self.http.post(&url).json(&body);
+            if !self.api_key.is_empty() {
+                req = req.bearer_auth(&self.api_key);
+            }
+            let resp = match req.send().await {
                 Ok(r) => r,
                 Err(e) => {
                     last_err = Some(e.into());
@@ -391,13 +406,13 @@ impl OpenAiClient {
 
             // Retryable errors
             if status.as_u16() == 429 || status.is_server_error() {
-                last_err = Some(anyhow::anyhow!("OpenAI returned status {}", status));
+                last_err = Some(anyhow::anyhow!("LLM returned status {}", status));
                 continue 'retry;
             }
 
             if !status.is_success() {
                 let text = resp.text().await.unwrap_or_default();
-                anyhow::bail!("OpenAI error {}: {}", status, text);
+                anyhow::bail!("LLM error {}: {}", status, text);
             }
 
             let chat: ChatResponse = resp
@@ -405,17 +420,13 @@ impl OpenAiClient {
                 .await
                 .context("failed to deserialise ChatResponse")?;
 
-            let tokens_in = chat.usage.prompt_tokens;
-            let tokens_out = chat.usage.completion_tokens;
-            let cost_usd =
-                tokens_in as f64 * 0.15 / 1_000_000.0 + tokens_out as f64 * 0.60 / 1_000_000.0;
+            let tokens_in = chat.prompt_eval_count;
+            let tokens_out = chat.eval_count;
+            // Local LLM is free at runtime; cost stays zero so the
+            // budget controller is a no-op without ripping it out.
+            let cost_usd = 0.0;
 
-            let raw_content = chat
-                .choices
-                .into_iter()
-                .next()
-                .map(|c| c.message.content)
-                .unwrap_or_default();
+            let raw_content = chat.message.content;
 
             let raw: FilterResponseRaw = match serde_json::from_str(&raw_content) {
                 Ok(r) => r,

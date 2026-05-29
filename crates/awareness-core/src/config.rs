@@ -3,11 +3,28 @@ use clap::Args;
 use std::path::{Path, PathBuf};
 
 use crate::backend::BackendKind;
-use crate::config_file::{default_frustration_keywords, default_sharp_apps, ConfigFile};
+use crate::config_file::{default_frustration_keywords, ConfigFile};
+
+/// Default OpenAI-compatible endpoint: OMEN running Ollama, reachable
+/// over Tailscale. Kept as a constant so `for_android` and tests can
+/// share the same value as the desktop default.
+pub const DEFAULT_LLM_BASE_URL: &str = "http://100.68.73.123:11434/v1";
+pub const DEFAULT_LLM_MODEL: &str = "qwen3:8b";
+pub const DEFAULT_LLM_TIMEOUT_SECONDS: u64 = 30;
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Bearer token for the chat endpoint. Empty when targeting Ollama
+    /// (no auth). Kept for the Android JNI bridge which still passes a
+    /// key parameter from Kotlin.
     pub openai_api_key: String,
+    /// Root URL of the OpenAI-compatible chat endpoint. Defaults to the
+    /// OMEN Ollama server over Tailscale.
+    pub llm_base_url: String,
+    /// Model identifier (e.g. `qwen3:8b`).
+    pub llm_model: String,
+    /// HTTP timeout for a single chat-completion call, in seconds.
+    pub llm_timeout_seconds: u64,
     pub budget_usd_daily: f64,
     pub tick_screen_seconds: u64,
     pub tick_analysis_seconds: u64,
@@ -35,9 +52,6 @@ pub struct Config {
     pub log_level: String,
     pub a11y_script: PathBuf,
     pub backend: BackendKind,
-    /// Substrings (case-insensitive) of `app` names that upgrade the vision
-    /// backend to its "sharp" (higher-detail) tier.
-    pub vision_sharp_apps: Vec<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -88,10 +102,16 @@ pub struct RunArgs {
     /// Path to the AT-SPI sidecar. Script tries first; OCR is the fallback.
     #[arg(long)]
     pub a11y_script: Option<PathBuf>,
-    /// Analysis backend: `vision` sends the screenshot to gpt-4o-mini vision,
-    /// `text` sends the extracted OCR/a11y text only (cheaper, lower quality).
-    #[arg(long, value_enum)]
-    pub backend: Option<BackendKind>,
+    /// OpenAI-compatible chat endpoint root (e.g. `http://omen:11434/v1`).
+    /// Defaults to the OMEN Ollama server over Tailscale.
+    #[arg(long)]
+    pub llm_base_url: Option<String>,
+    /// Local model identifier (e.g. `qwen3:8b`, `aya:8b`, `qwen2.5:7b`).
+    #[arg(long)]
+    pub llm_model: Option<String>,
+    /// HTTP timeout per chat-completion call, in seconds.
+    #[arg(long)]
+    pub llm_timeout_seconds: Option<u64>,
     /// Path to a TOML config file (overrides default search locations).
     #[arg(long)]
     pub config: Option<PathBuf>,
@@ -106,12 +126,10 @@ impl Config {
         // Load .env if present (don't fail if missing)
         let _ = dotenvy::dotenv();
 
-        let openai_api_key = std::env::var("OPENAI_API_KEY")
-            .context("OPENAI_API_KEY not set. Add to .env or environment.")?;
-
-        if openai_api_key.is_empty() {
-            anyhow::bail!("OPENAI_API_KEY is empty");
-        }
+        // Local LLM is the default — no key required. The env var is
+        // still honoured for users who choose to point at a paid
+        // OpenAI-compatible endpoint via --llm-base-url.
+        let openai_api_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
 
         // Load TOML config file (optional). Precedence lowest among non-defaults.
         let toml_cfg = {
@@ -184,14 +202,23 @@ impl Config {
             .clone()
             .unwrap_or_else(default_frustration_keywords);
 
-        let vision_sharp_apps = toml_cfg
-            .vision
-            .sharp_apps
-            .clone()
-            .unwrap_or_else(default_sharp_apps)
-            .into_iter()
-            .map(|s| s.to_lowercase())
-            .collect();
+        let llm_base_url = args
+            .llm_base_url
+            .or_else(|| std::env::var("AWARENESS_LLM_BASE_URL").ok())
+            .or_else(|| toml_cfg.llm.base_url.clone())
+            .unwrap_or_else(|| DEFAULT_LLM_BASE_URL.to_string());
+
+        let llm_model = args
+            .llm_model
+            .or_else(|| std::env::var("AWARENESS_LLM_MODEL").ok())
+            .or_else(|| toml_cfg.llm.model.clone())
+            .unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string());
+
+        let llm_timeout_seconds = args
+            .llm_timeout_seconds
+            .or_else(|| env_parsed::<u64>("AWARENESS_LLM_TIMEOUT_SECONDS"))
+            .or(toml_cfg.llm.timeout_seconds)
+            .unwrap_or(DEFAULT_LLM_TIMEOUT_SECONDS);
 
         let min_send_interval_seconds = toml_cfg
             .runtime
@@ -230,19 +257,11 @@ impl Config {
                     .unwrap_or_else(|| PathBuf::from("scripts/a11y_dump.py"))
             });
 
-        let backend = args
-            .backend
-            .or_else(
-                || match std::env::var("AWARENESS_BACKEND").ok().as_deref() {
-                    Some("text") | Some("Text") => Some(BackendKind::Text),
-                    Some("vision") | Some("Vision") => Some(BackendKind::Vision),
-                    _ => None,
-                },
-            )
-            .unwrap_or(BackendKind::Vision);
-
         let cfg = Self {
             openai_api_key,
+            llm_base_url,
+            llm_model,
+            llm_timeout_seconds,
             budget_usd_daily,
             tick_screen_seconds,
             tick_analysis_seconds,
@@ -262,8 +281,7 @@ impl Config {
             output_dir,
             log_level,
             a11y_script,
-            backend,
-            vision_sharp_apps,
+            backend: BackendKind::Text,
         };
 
         cfg.validate()?;
@@ -292,8 +310,19 @@ impl Config {
             );
         }
 
-        if self.budget_usd_daily <= 0.0 {
-            anyhow::bail!("--budget must be > 0 (got {})", self.budget_usd_daily);
+        // Budget is dead code now (local LLM cost = 0); we still allow a
+        // positive value for any user that points back at a paid endpoint.
+        if self.budget_usd_daily < 0.0 {
+            anyhow::bail!("--budget must be >= 0 (got {})", self.budget_usd_daily);
+        }
+        if self.llm_base_url.trim().is_empty() {
+            anyhow::bail!("llm_base_url must not be empty");
+        }
+        if self.llm_model.trim().is_empty() {
+            anyhow::bail!("llm_model must not be empty");
+        }
+        if self.llm_timeout_seconds == 0 {
+            anyhow::bail!("llm_timeout_seconds must be >= 1");
         }
         if self.tick_screen_seconds == 0 || self.tick_analysis_seconds == 0 {
             anyhow::bail!("tick intervals must be >= 1s");
@@ -342,6 +371,9 @@ impl Config {
     pub fn for_android(openai_api_key: String, budget_usd_daily: f64) -> Self {
         Self {
             openai_api_key,
+            llm_base_url: DEFAULT_LLM_BASE_URL.to_string(),
+            llm_model: DEFAULT_LLM_MODEL.to_string(),
+            llm_timeout_seconds: DEFAULT_LLM_TIMEOUT_SECONDS,
             budget_usd_daily,
             tick_screen_seconds: 2,
             tick_analysis_seconds: 10,
@@ -370,7 +402,6 @@ impl Config {
             log_level: "info".into(),
             a11y_script: PathBuf::new(),
             backend: BackendKind::Text,
-            vision_sharp_apps: crate::config_file::default_sharp_apps(),
         }
     }
 }
@@ -395,7 +426,10 @@ mod tests {
 
     fn valid_config() -> Config {
         Config {
-            openai_api_key: "test".into(),
+            openai_api_key: String::new(),
+            llm_base_url: DEFAULT_LLM_BASE_URL.into(),
+            llm_model: DEFAULT_LLM_MODEL.into(),
+            llm_timeout_seconds: DEFAULT_LLM_TIMEOUT_SECONDS,
             budget_usd_daily: 1.0,
             tick_screen_seconds: 2,
             tick_analysis_seconds: 10,
@@ -416,10 +450,6 @@ mod tests {
             log_level: "info".into(),
             a11y_script: PathBuf::from("../../scripts/a11y_dump.py"),
             backend: BackendKind::Text,
-            vision_sharp_apps: crate::config_file::default_sharp_apps()
-                .into_iter()
-                .map(|s| s.to_lowercase())
-                .collect(),
         }
     }
 
@@ -432,13 +462,30 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_non_positive_budget() {
+    fn validate_rejects_negative_budget() {
+        // Zero is fine post-local-LLM (cost = 0); negative still rejected.
         let mut cfg = valid_config();
         cfg.budget_usd_daily = 0.0;
-        assert!(cfg.validate().is_err(), "zero budget must fail");
+        cfg.validate()
+            .expect("zero budget is acceptable with local LLM");
 
         cfg.budget_usd_daily = -0.01;
         assert!(cfg.validate().is_err(), "negative budget must fail");
+    }
+
+    #[test]
+    fn validate_rejects_empty_llm_settings() {
+        let mut cfg = valid_config();
+        cfg.llm_base_url = String::new();
+        assert!(cfg.validate().is_err(), "empty base_url must fail");
+
+        let mut cfg = valid_config();
+        cfg.llm_model = String::new();
+        assert!(cfg.validate().is_err(), "empty model must fail");
+
+        let mut cfg = valid_config();
+        cfg.llm_timeout_seconds = 0;
+        assert!(cfg.validate().is_err(), "zero timeout must fail");
     }
 
     #[test]
@@ -488,6 +535,8 @@ mod tests {
     fn for_android_carries_key_and_budget_and_uses_production_gate_defaults() {
         let cfg = Config::for_android("sk-x".into(), 1.25);
         assert_eq!(cfg.openai_api_key, "sk-x");
+        assert_eq!(cfg.llm_base_url, DEFAULT_LLM_BASE_URL);
+        assert_eq!(cfg.llm_model, DEFAULT_LLM_MODEL);
         assert!((cfg.budget_usd_daily - 1.25).abs() < f64::EPSILON);
 
         // Gate thresholds must match the desktop production defaults so

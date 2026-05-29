@@ -178,7 +178,10 @@ mod tests {
 
     fn make_config() -> Config {
         Config {
-            openai_api_key: "test".to_string(),
+            openai_api_key: String::new(),
+            llm_base_url: crate::config::DEFAULT_LLM_BASE_URL.into(),
+            llm_model: crate::config::DEFAULT_LLM_MODEL.into(),
+            llm_timeout_seconds: crate::config::DEFAULT_LLM_TIMEOUT_SECONDS,
             budget_usd_daily: 1.0,
             tick_screen_seconds: 2,
             tick_analysis_seconds: 10,
@@ -199,7 +202,6 @@ mod tests {
             log_level: "info".to_string(),
             a11y_script: std::path::PathBuf::from("scripts/a11y_dump.py"),
             backend: crate::backend::BackendKind::Text,
-            vision_sharp_apps: crate::config_file::default_sharp_apps(),
         }
     }
 

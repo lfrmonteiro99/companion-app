@@ -9,7 +9,7 @@ pub struct ConfigFile {
     pub gate: GateSection,
     pub runtime: RuntimeSection,
     pub tts: TtsSection,
-    pub vision: VisionSection,
+    pub llm: LlmSection,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -45,32 +45,14 @@ pub struct TtsSection {
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
-pub struct VisionSection {
-    /// Apps for which the vision backend should use the "sharp" (higher
-    /// detail, more expensive) tier. Matched as a case-insensitive substring
-    /// against `event.app`. When unset, a sensible default list is used.
-    pub sharp_apps: Option<Vec<String>>,
-}
-
-pub fn default_sharp_apps() -> Vec<String> {
-    [
-        "vscode",
-        "cursor",
-        "code",
-        "intellij",
-        "pycharm",
-        "webstorm",
-        "sublime",
-        "atom",
-        "nvim",
-        "neovim",
-        "text_editor",
-        "helix",
-        "zed",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
+pub struct LlmSection {
+    /// OpenAI-compatible chat endpoint root, e.g.
+    /// `http://100.68.73.123:11434/v1` for an Ollama server.
+    pub base_url: Option<String>,
+    /// Model identifier as known to the endpoint, e.g. `qwen3:8b`.
+    pub model: Option<String>,
+    /// HTTP timeout in seconds for a single chat-completion call.
+    pub timeout_seconds: Option<u64>,
 }
 
 impl ConfigFile {

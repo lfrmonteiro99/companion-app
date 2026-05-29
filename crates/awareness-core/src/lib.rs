@@ -6,7 +6,6 @@
 //! desktop, `core-rs` for Android) that depend on this one.
 
 pub mod api;
-pub mod api_vision;
 pub mod backend;
 pub mod budget;
 pub mod config;

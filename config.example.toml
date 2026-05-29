@@ -35,11 +35,17 @@ enabled = true
 # spd-say (speech-dispatcher) > espeak-ng > espeak > say (macOS).
 # command = "spd-say"
 
-[vision]
-# Apps that upgrade the vision backend to its "sharp" (high-detail) tier.
-# Matched as a case-insensitive substring of the inferred app name. Sharp
-# is more expensive but legible on small text (editors, IDEs). When unset,
-# a built-in default list is used.
-# sharp_apps = ["vscode", "cursor", "code", "intellij", "pycharm",
-#               "webstorm", "sublime", "atom", "nvim", "neovim",
-#               "text_editor", "helix", "zed"]
+[llm]
+# OpenAI-compatible chat endpoint. Default targets the OMEN Ollama
+# server over Tailscale. Override with --llm-base-url or
+# AWARENESS_LLM_BASE_URL.
+# base_url = "http://100.68.73.123:11434/v1"
+# Local model identifier as known to the endpoint. qwen3:8b is the
+# default after benchmarking on the OMEN RTX 2060: clean PT-EU register,
+# correct chat-direction reading, no Chinese leak (qwen2.5:7b leaks it),
+# ~3s warm latency for a 200-token reply.
+# model = "qwen3:8b"
+# Hard HTTP timeout per chat-completion call. Cold-load of an 8B Q4 model
+# on the OMEN takes ~25s, so 30s default keeps the first tick of a cold
+# run from failing.
+# timeout_seconds = 30

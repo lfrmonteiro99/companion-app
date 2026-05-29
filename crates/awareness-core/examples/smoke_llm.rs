@@ -24,7 +24,10 @@ fn cfg() -> Config {
         openai_api_key: String::new(),
         llm_base_url: base_url,
         llm_model: model,
-        llm_timeout_seconds: DEFAULT_LLM_TIMEOUT_SECONDS,
+        llm_timeout_seconds: std::env::var("AWARENESS_LLM_TIMEOUT_SECONDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_LLM_TIMEOUT_SECONDS),
         budget_usd_daily: 0.0,
         tick_screen_seconds: 2,
         tick_analysis_seconds: 10,
@@ -102,6 +105,65 @@ async fn main() -> anyhow::Result<()> {
                 },
                 vec!["Rust async".into()],
                 "Sobre o utilizador: dev Rust focado em sistemas distribuídos.\nInteresses confirmados pelo utilizador: Rust async",
+            ),
+            // Single open reel about an actor's appearance — nothing actionable
+            // to add. Target behaviour: SILENT (must not narrate what's on screen).
+            "reel_actor" => (
+                ContextEvent {
+                    timestamp: Utc::now(),
+                    app: Some("Instagram".into()),
+                    window_title: Some("Instagram — Reels".into()),
+                    screen_text_excerpt:
+                        "cinefilo.pt: 'A transformação física do Christian Bale para cada papel é absurda'. \
+                         Reel mostra antes/depois em vários filmes. Like 412k Comments 3.1k. \
+                         Comentários: 'irreconhecível', 'que ator brutal', 'método extremo'"
+                            .into(),
+                    mic_text_recent: None,
+                    duration_on_app_seconds: 90,
+                    history_apps_30min: vec![("Instagram".into(), 90)],
+                    mic_text_new: false,
+                    media_audio_text: None,
+                },
+                vec![],
+                "",
+            ),
+            // Reel asserting a verifiable falsehood. Target: ALERT (criterion i — correção).
+            "reel_falseclaim" => (
+                ContextEvent {
+                    timestamp: Utc::now(),
+                    app: Some("Instagram".into()),
+                    window_title: Some("Instagram — Reels".into()),
+                    screen_text_excerpt:
+                        "factos.diarios: 'Sabias que só usamos 10% do cérebro? Imagina o potencial!'. \
+                         Reel motivacional. Like 88k Comments 1.2k"
+                            .into(),
+                    mic_text_recent: None,
+                    duration_on_app_seconds: 60,
+                    history_apps_30min: vec![("Instagram".into(), 60)],
+                    mic_text_new: false,
+                    media_audio_text: None,
+                },
+                vec![],
+                "",
+            ),
+            // Generic lifestyle reel — nothing to add. Target: SILENT.
+            "reel_generic" => (
+                ContextEvent {
+                    timestamp: Utc::now(),
+                    app: Some("Instagram".into()),
+                    window_title: Some("Instagram — Reels".into()),
+                    screen_text_excerpt:
+                        "morning.vibes: 'POV: a tua rotina matinal perfeita ☕'. \
+                         Reel mostra café, plantas, música lo-fi. Like 56k Comments 240"
+                            .into(),
+                    mic_text_recent: None,
+                    duration_on_app_seconds: 75,
+                    history_apps_30min: vec![("Instagram".into(), 75)],
+                    mic_text_new: false,
+                    media_audio_text: None,
+                },
+                vec![],
+                "",
             ),
             _ => (
                 ContextEvent {

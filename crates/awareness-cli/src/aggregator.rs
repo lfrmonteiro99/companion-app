@@ -200,7 +200,10 @@ mod tests {
 
     fn dummy_cfg() -> Arc<Config> {
         Arc::new(Config {
-            openai_api_key: "test".into(),
+            openai_api_key: String::new(),
+            llm_base_url: crate::config::DEFAULT_LLM_BASE_URL.into(),
+            llm_model: crate::config::DEFAULT_LLM_MODEL.into(),
+            llm_timeout_seconds: crate::config::DEFAULT_LLM_TIMEOUT_SECONDS,
             budget_usd_daily: 1.0,
             tick_screen_seconds: 2,
             // Long interval so the periodic-tick branch doesn't emit during
@@ -223,7 +226,6 @@ mod tests {
             log_level: "info".into(),
             a11y_script: std::path::PathBuf::from("a11y.py"),
             backend: BackendKind::Text,
-            vision_sharp_apps: crate::config_file::default_sharp_apps(),
         })
     }
 

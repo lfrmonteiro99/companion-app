@@ -19,6 +19,7 @@ use awareness_cli::jsonl::JsonlWriter;
 use awareness_cli::memory::{MemoryEntry, MemoryRing};
 use awareness_cli::ocr;
 use awareness_cli::tts::TtsConfig;
+use awareness_cli::user_profile::UserProfile;
 use awareness_cli::whisper::WhisperEngine;
 use awareness_core::types::{ContextEvent, FilterResponse};
 
@@ -47,6 +48,36 @@ enum Commands {
         /// the repo root layout (../../scripts/analyze_runs.py).
         #[arg(long, default_value = "scripts/analyze_runs.py")]
         script: std::path::PathBuf,
+    },
+    /// Manage the curated interest list stored in
+    /// `<output-dir>/user_profile.json`. The active run reads this each
+    /// tick to bias the LLM towards content the user actually cares about.
+    Interest {
+        #[command(subcommand)]
+        action: InterestAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum InterestAction {
+    /// Append a topic to the explicit-interest list.
+    Add {
+        /// Topic string (3-160 chars). Quoted phrases are kept verbatim.
+        topic: String,
+        /// Where `user_profile.json` lives. Default matches `run`.
+        #[arg(long, default_value = "data/phase_poc")]
+        output_dir: std::path::PathBuf,
+    },
+    /// Print the current explicit-interest list, one per line.
+    List {
+        #[arg(long, default_value = "data/phase_poc")]
+        output_dir: std::path::PathBuf,
+    },
+    /// Remove a topic (case-insensitive exact match).
+    Remove {
+        topic: String,
+        #[arg(long, default_value = "data/phase_poc")]
+        output_dir: std::path::PathBuf,
     },
 }
 
@@ -79,8 +110,50 @@ async fn main() -> Result<()> {
         } => {
             analyze(runs_dir, output_md, script)?;
         }
+        Commands::Interest { action } => interest_cmd(action)?,
     }
 
+    Ok(())
+}
+
+fn profile_path(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join("user_profile.json")
+}
+
+fn interest_cmd(action: InterestAction) -> Result<()> {
+    match action {
+        InterestAction::Add { topic, output_dir } => {
+            std::fs::create_dir_all(&output_dir)?;
+            let p = profile_path(&output_dir);
+            let mut profile = UserProfile::load(&p);
+            if profile.add_explicit_interest(&topic) {
+                profile.save(&p)?;
+                println!("added: {topic}");
+            } else {
+                anyhow::bail!(
+                    "rejected: topic must be 3-160 chars, unique (case-insensitive), \
+                     and the list cap not exceeded"
+                );
+            }
+        }
+        InterestAction::List { output_dir } => {
+            let p = profile_path(&output_dir);
+            let profile = UserProfile::load(&p);
+            for t in profile.list_explicit_interests() {
+                println!("{t}");
+            }
+        }
+        InterestAction::Remove { topic, output_dir } => {
+            let p = profile_path(&output_dir);
+            let mut profile = UserProfile::load(&p);
+            if profile.remove_explicit_interest(&topic) {
+                profile.save(&p)?;
+                println!("removed: {topic}");
+            } else {
+                anyhow::bail!("no matching topic in {:?}", p);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -186,6 +259,7 @@ async fn process_send(
     alert_tx: &tokio::sync::mpsc::Sender<AlertPrompt>,
     cfg: &Config,
     last_api_call_at: &mut Option<std::time::Instant>,
+    profile: &Arc<Mutex<UserProfile>>,
 ) -> (Option<FilterResponse>, Option<u64>) {
     // Global min-interval cooldown. Emotional events bypass.
     let cooldown_ok = decision.reason == "emotional"
@@ -223,8 +297,22 @@ async fn process_send(
     let img_ref: Option<&[u8]> = img_bytes.as_deref().map(|v| v.as_slice());
     let mem_str = memory.lock().await.to_prompt_lines();
 
+    // Build the profile-side prompt context (bio + interests +
+    // anti-interests + top apps) and the per-tick matched-interests
+    // list. Both are empty when the profile is fresh; the prompt
+    // formatter in `api.rs` already skips empty values cleanly.
+    let (profile_ctx, matched) = {
+        let p = profile.lock().await;
+        let m = p.filter_interests_for_screen(
+            &event.screen_text_excerpt,
+            event.window_title.as_deref(),
+            event.app.as_deref(),
+        );
+        (p.to_prompt_context(), m)
+    };
+
     let resp = match backend
-        .analyze(event, img_ref, &mem_str, &decision.reason, "", &[])
+        .analyze(event, img_ref, &mem_str, &decision.reason, &profile_ctx, &matched)
         .await
     {
         Ok(r) => r,
@@ -426,21 +514,18 @@ async fn run(args: RunArgs) -> Result<()> {
     // Whisper engine (loaded once, shared via Arc)
     let whisper = Arc::new(WhisperEngine::load(&cfg.whisper_model_path)?);
 
-    // Shared cache for the most recent screenshot (PNG bytes). Only populated
-    // when the active backend needs it; the Vision backend reads this at API
-    // call time. Updated on every kept frame.
+    // Shared cache placeholder for parity with the old vision-backend
+    // path. Local LLM is text-only so this is always None at runtime;
+    // kept so `process_send`'s signature doesn't have to ripple.
     let latest_png: Arc<Mutex<Option<Arc<Vec<u8>>>>> = Arc::new(Mutex::new(None));
 
     // Extraction loop: screen_rx → perceptual dedup → try AT-SPI → fall back to
     // OCR → text dedup → ocr_tx. AT-SPI gives us structured, error-free text for
-    // native GTK apps. OCR covers the rest. In vision mode, the raw image is
-    // also cached for the Vision backend to send to gpt-4o-mini.
+    // native GTK apps. OCR covers the rest.
     {
         let threshold = cfg.perceptual_hash_threshold;
         let similarity = cfg.text_dedup_similarity;
         let a11y_script = cfg.a11y_script.clone();
-        let cache_image = matches!(cfg.backend, awareness_cli::backend::BackendKind::Vision);
-        let latest_png = latest_png.clone();
         tokio::spawn(async move {
             let mut pdedup = PerceptualDedup::new(threshold);
             let mut tdedup = TextDedup::new(20, similarity);
@@ -468,25 +553,6 @@ async fn run(args: RunArgs) -> Result<()> {
                 };
                 let focused_image =
                     crop_to_active_window(&frame.image, frame.native_size, bbox);
-
-                // Cache PNG bytes for the vision backend. Encoded from the
-                // focused image when available so gpt-4o-mini vision sees
-                // the window instead of desktop confetti.
-                if cache_image {
-                    let img = focused_image
-                        .clone()
-                        .unwrap_or_else(|| frame.image.clone());
-                    if let Ok(Some(bytes)) = tokio::task::spawn_blocking(move || {
-                        let mut buf = std::io::Cursor::new(Vec::new());
-                        img.write_to(&mut buf, image::ImageFormat::Png)
-                            .ok()
-                            .map(|_| buf.into_inner())
-                    })
-                    .await
-                    {
-                        *latest_png.lock().await = Some(Arc::new(bytes));
-                    }
-                }
 
                 let (out, src) = match a11y_result {
                     a11y::A11yResult::Rich(out) => (out, "a11y"),
@@ -571,7 +637,7 @@ async fn run(args: RunArgs) -> Result<()> {
     // Eval loop (terminal alerts + ratings + optional TTS)
     let _eval = spawn_eval_loop(alert_rx, ratings_path, tts_config).await?;
 
-    // API backend: text or vision, selected by --backend flag.
+    // Analysis backend (text-only; local LLM via Ollama OpenAI-compat).
     let backend = Backend::new(cfg.backend, &cfg)?;
     tracing::info!("analysis backend: {}", backend.label());
 
@@ -583,6 +649,23 @@ async fn run(args: RunArgs) -> Result<()> {
     // Flow-state detector — suppresses low/medium urgency notifications
     // while the user is deep-focused in an editor/terminal for several minutes.
     let flow_state = Arc::new(Mutex::new(FlowState::new()));
+
+    // Persistent user profile (bio + interests + anti-interests + app
+    // usage). Used to inject a per-tick context block into the LLM
+    // system prompt and a matched-interests list into the user turn —
+    // the Android frontend has always done this; the desktop CLI used
+    // to send "" / &[] which left the entire interest mechanism dead.
+    let profile_p = profile_path(&cfg.output_dir);
+    let profile = Arc::new(Mutex::new(UserProfile::load(&profile_p)));
+    {
+        let p = profile.lock().await;
+        tracing::info!(
+            "user_profile: bio_set={} explicit_interests={} learned_interests={}",
+            !p.bio.trim().is_empty(),
+            p.list_explicit_interests().len(),
+            p.interests.len()
+        );
+    }
 
     // Gate + API loop — runs on the main async task
     let mut gate_state = GateState::default();
@@ -627,11 +710,19 @@ async fn run(args: RunArgs) -> Result<()> {
                     process_send(
                         tick_id, &event, &decision, &backend, &budget,
                         &latest_png, &memory, &flow_state, &alert_tx,
-                        &cfg, &mut last_api_call_at,
+                        &cfg, &mut last_api_call_at, &profile,
                     ).await
                 } else {
                     (None, None)
                 };
+
+                // Passive app-usage tracking on every tick (independent
+                // of gate outcome) so the "top apps" prompt hint reflects
+                // real usage even when most ticks are skipped.
+                if let Some(app) = event.app.as_deref() {
+                    let mut p = profile.lock().await;
+                    p.record_app_usage(app);
+                }
 
                 let entry = RunLogEntry {
                     tick_id,
@@ -651,6 +742,12 @@ async fn run(args: RunArgs) -> Result<()> {
                 // lost to a crash between now and the next natural flush.
                 let mut b = budget.lock().await;
                 b.flush();
+                // Persist the user profile so app-usage counters from
+                // this session survive the next run. Best-effort: a
+                // failed save shouldn't block shutdown.
+                if let Err(e) = profile.lock().await.save(&profile_p) {
+                    tracing::warn!("user_profile save on shutdown: {e}");
+                }
                 println!(
                     "\nShutdown. Ticks: {tick_id} | Cost: ${:.4} | Remaining: ${:.4}",
                     b.spent(), b.remaining()

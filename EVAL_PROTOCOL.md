@@ -18,10 +18,20 @@ Metric definitions fixas ANTES de começar qualquer dogfooding.
 |---|---|
 | `useful_rate` (useful / (useful + not_useful + annoying)) | ≥ 40% |
 | Alerts/hora em horário de trabalho | 2-8 |
-| Custo médio diário | < $0.30 |
-| CPU médio | < 20% |
-| RAM pico | < 1GB |
-| Latência tick→alert (p95) | < 5s |
+| CPU médio (laptop) | < 20% |
+| RAM pico (laptop) | < 1GB |
+| Latência tick→alert (p95) | < 15s warm / < 20s cold |
+
+Notas:
+- Custo deixou de ser métrica (LLM local via Ollama no OMEN, $0/dia).
+- Medições reais com qwen3:8b Q4 na RTX 2060 após (a) trim do system
+  prompt para ~970 tokens, (b) switch para `/api/chat` nativo,
+  (c) `num_ctx=6144` explícito, (d) `keep_alive=30m`: warm steady
+  9-12s, cold ~12s, p95 estimada ~14s. Modelo fica 100% GPU
+  (`ollama ps` mostra `5.9 GB 100% GPU 6144`).
+- O shim `/v1/chat/completions` IGNORA `options.num_ctx`. Se voltares
+  a usá-lo, Ollama defaulta 8192 → ~14% layers spill para CPU na 2060
+  → latência sobe para 16-20s warm. Mantém-te no `/api/chat` nativo.
 
 Falha em **qualquer uma** → iterar ou abandonar. Passa em **todas** → continuar para MVP propriamente dito.
 

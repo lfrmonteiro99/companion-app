@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -289,7 +290,9 @@ async fn process_send(
     };
 
     let t1 = std::time::Instant::now();
-    let img_bytes: Option<Arc<Vec<u8>>> = if backend.needs_image() {
+    let img_bytes: Option<Arc<Vec<u8>>> = if backend.needs_image()
+        && awareness_core::media::is_media_app(event.app.as_deref())
+    {
         latest_png.lock().await.clone()
     } else {
         None
@@ -515,6 +518,8 @@ async fn run(args: RunArgs) -> Result<()> {
     let (transcript_tx, transcript_rx) = mpsc::channel(32);
     let (event_tx, mut event_rx) = mpsc::channel(64);
     let (alert_tx, alert_rx) = mpsc::channel(16);
+    let (media_audio_tx, media_audio_rx) = mpsc::channel::<String>(8);
+    let media_active = Arc::new(AtomicBool::new(false));
 
     // Capture tasks
     let _screen = capture::spawn_screen_capture(screen_tx, cfg.clone()).await?;
@@ -614,7 +619,9 @@ async fn run(args: RunArgs) -> Result<()> {
                     focused_image.is_some(),
                 );
 
-                if vision_enabled {
+                if vision_enabled
+                    && awareness_core::media::is_media_app(out.inferred_app_name.as_deref())
+                {
                     let src_img = focused_image.as_ref().unwrap_or(&frame.image);
                     // Downscale to bound image tokens, then PNG-encode.
                     let scaled = src_img.resize(vision_max_px, vision_max_px, image::imageops::FilterType::Triangle);
@@ -651,11 +658,43 @@ async fn run(args: RunArgs) -> Result<()> {
         });
     }
 
-    // Aggregator: (ocr_rx, transcript_rx) → event_tx
+    // Loopback audio + second whisper loop (media audio lane)
+    if cfg.media_audio_enabled {
+        let (chunk_tx, mut chunk_rx) = mpsc::channel::<audio::AudioChunk>(8);
+        #[cfg(feature = "full")]
+        {
+            let _lb = audio::spawn_loopback_capture(chunk_tx).await?;
+        }
+        #[cfg(not(feature = "full"))]
+        {
+            drop(chunk_tx);
+        }
+        let whisper_m = whisper.clone();
+        let active = media_active.clone();
+        let out = media_audio_tx.clone();
+        tokio::spawn(async move {
+            while let Some(chunk) = chunk_rx.recv().await {
+                if !active.load(Ordering::Relaxed) {
+                    continue;
+                }
+                let w = whisper_m.clone();
+                if let Ok(Ok(t)) = tokio::task::spawn_blocking(move || w.transcribe(&chunk)).await {
+                    if !t.text.is_empty() {
+                        let _ = out.send(t.text).await;
+                    }
+                }
+            }
+        });
+    }
+    // Drop the local media_audio_tx: spawned task holds its own clone;
+    // closes the aggregator's media_audio arm if media_audio is disabled.
+    drop(media_audio_tx);
+
+    // Aggregator: (ocr_rx, transcript_rx, media_audio_rx) → event_tx
     {
         let cfg = cfg.clone();
         tokio::spawn(async move {
-            if let Err(e) = aggregator::run(ocr_rx, transcript_rx, event_tx, cfg).await {
+            if let Err(e) = aggregator::run(ocr_rx, transcript_rx, event_tx, cfg, media_audio_rx).await {
                 tracing::error!("Aggregator: {e}");
             }
         });
@@ -728,6 +767,10 @@ async fn run(args: RunArgs) -> Result<()> {
 
                 // Update flow-state tracker on every event (independent of gate outcome).
                 flow_state.lock().await.update(&event.app);
+                media_active.store(
+                    awareness_core::media::is_media_app(event.app.as_deref()),
+                    Ordering::Relaxed,
+                );
 
                 let t0 = std::time::Instant::now();
                 let decision = gate::evaluate(&event, &mut gate_state, &cfg);

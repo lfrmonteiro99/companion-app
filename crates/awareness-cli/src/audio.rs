@@ -128,6 +128,107 @@ async fn spawn_mic_capture_full(tx: mpsc::Sender<AudioChunk>) -> Result<JoinHand
 }
 
 // ---------------------------------------------------------------------------
+// Loopback (system audio monitor) capture — mirrors spawn_mic_capture_full
+// ---------------------------------------------------------------------------
+
+/// Spawns loopback (system audio / monitor) capture loop.
+///
+/// Enumerates cpal input devices and picks the first whose name contains
+/// "monitor" (case-insensitive), which on PulseAudio/PipeWire corresponds
+/// to the system output monitor source. Feeds the existing `vad_loop`.
+///
+/// When no monitor device is found, logs a warning and returns a no-op
+/// sleeping task so the rest of the pipeline continues unaffected.
+#[cfg(feature = "full")]
+pub async fn spawn_loopback_capture(tx: mpsc::Sender<AudioChunk>) -> Result<JoinHandle<()>> {
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
+
+    std::thread::spawn(move || {
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        use std::sync::{Arc as StdArc, Mutex};
+
+        let host = cpal::default_host();
+
+        // Find monitor source (PulseAudio/PipeWire loopback)
+        let device = match host.input_devices() {
+            Ok(devs) => devs.into_iter().find(|d| {
+                d.name()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains("monitor")
+            }),
+            Err(e) => {
+                let _ = ready_tx.send(Err(anyhow::anyhow!("input_devices: {e}")));
+                return;
+            }
+        };
+
+        let device = match device {
+            Some(d) => {
+                tracing::info!("Loopback device: {}", d.name().unwrap_or_default());
+                d
+            }
+            None => {
+                tracing::warn!(
+                    "No monitor input device found — loopback capture disabled. \
+                     Enable a PulseAudio/PipeWire monitor source to transcribe system audio."
+                );
+                let _ = ready_tx.send(Ok(()));
+                // No-op: signal success but do not feed the vad_loop.
+                // Drop tx so the aggregator media_audio arm closes cleanly.
+                return;
+            }
+        };
+
+        let config = cpal::StreamConfig {
+            channels: 1,
+            sample_rate: cpal::SampleRate(16_000),
+            buffer_size: cpal::BufferSize::Default,
+        };
+
+        let (cpal_tx, cpal_rx) = std::sync::mpsc::channel::<Vec<i16>>();
+        let error_flag = StdArc::new(Mutex::new(Option::<String>::None));
+        let error_flag_cb = StdArc::clone(&error_flag);
+
+        let stream = match device.build_input_stream(
+            &config,
+            move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                let _ = cpal_tx.send(data.to_vec());
+            },
+            move |err| {
+                *error_flag_cb.lock().unwrap() = Some(err.to_string());
+            },
+            None,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = ready_tx.send(Err(anyhow::anyhow!("loopback build_input_stream: {e}")));
+                return;
+            }
+        };
+
+        if let Err(e) = stream.play() {
+            let _ = ready_tx.send(Err(anyhow::anyhow!("loopback stream.play: {e}")));
+            return;
+        }
+
+        let _ = ready_tx.send(Ok(()));
+        let _stream = stream; // keep alive
+        vad_loop(cpal_rx, tx, error_flag);
+    });
+
+    // Wait for startup signal
+    ready_rx.recv()??;
+
+    let handle = tokio::spawn(async {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+        }
+    });
+    Ok(handle)
+}
+
+// ---------------------------------------------------------------------------
 // VAD loop — runs in spawn_blocking thread
 // ---------------------------------------------------------------------------
 

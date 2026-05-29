@@ -208,6 +208,7 @@ mod tests {
             duration_on_app_seconds: 0,
             history_apps_30min: vec![],
             mic_text_new: false,
+            media_audio_text: None,
         }
     }
 
@@ -237,6 +238,9 @@ mod tests {
             log_level: "info".to_string(),
             a11y_script: std::path::PathBuf::from("scripts/a11y_dump.py"),
             backend: crate::backend::BackendKind::Text,
+            vision_enabled: false,
+            vision_max_image_px: crate::config::DEFAULT_VISION_MAX_IMAGE_PX,
+            media_audio_enabled: false,
         }
     }
 

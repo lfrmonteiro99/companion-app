@@ -301,6 +301,7 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
                     &memory_lines,
                     &profile_ctx,
                     &matched_for_api,
+                    None, // Android frontend is text-only (no screenshot path).
                 )
                 .await
                 .unwrap_or_else(|e| FilterResponse {

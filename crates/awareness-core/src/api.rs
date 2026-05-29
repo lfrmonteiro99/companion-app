@@ -19,8 +19,10 @@ struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     /// "json" forces structured output. Equivalent to OpenAI's
-    /// `response_format: { type: "json_object" }`.
-    format: &'static str,
+    /// `response_format: { type: "json_object" }`. Omitted in vision mode
+    /// because thinking models (qwen3-vl) produce empty output with format:"json".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<&'static str>,
     options: ChatOptions,
     /// How long Ollama keeps the model loaded in (V)RAM after this
     /// call. "30m" avoids paying ~25s of cold-load each time another
@@ -46,6 +48,8 @@ struct ChatOptions {
 struct ChatMessage {
     role: String,
     content: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    images: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -78,6 +82,39 @@ struct FilterResponseRaw {
     quick_message: String,
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Derive Ollama's native chat endpoint, tolerating a trailing `/v1` or `/`.
+pub(crate) fn ollama_chat_endpoint(base_url: &str) -> String {
+    let root = base_url
+        .trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .trim_end_matches('/');
+    format!("{}/api/chat", root)
+}
+
+/// Extract the first complete `{...}` JSON object from model output. Thinking
+/// models may prepend reasoning or wrap JSON in markdown fences.
+pub(crate) fn extract_json_object(s: &str) -> &str {
+    match (s.find('{'), s.rfind('}')) {
+        (Some(a), Some(b)) if b > a => &s[a..=b],
+        _ => s,
+    }
+}
+
+fn build_user_message(content: &str, image_png: Option<&[u8]>) -> ChatMessage {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let images = match image_png {
+        Some(bytes) => vec![STANDARD.encode(bytes)],
+        None => Vec::new(),
+    };
+    ChatMessage {
+        role: "user".to_string(),
+        content: content.to_string(),
+        images,
+    }
+}
+
 // ── System prompt ─────────────────────────────────────────────────────────────
 
 // Restored 2026-05-29 to ~2700 tokens (was 3351 original, 969 trimmed).
@@ -90,7 +127,7 @@ struct FilterResponseRaw {
 // still leaves comfortable headroom under num_ctx.
 const SYSTEM_PROMPT: &str = r#"És um colega sénior que acompanha o ecrã do utilizador. Não és observador passivo — és alguém que ajuda, antecipa, e sugere acções concretas. Tens experiência em engenharia, comunicação profissional e debugging. Falas pouco, certeiro, em português europeu.
 
-Recebes TEXTO extraído da janela activa (árvore de acessibilidade ou OCR), app detectada, transcrição recente do microfone, e um Histórico recente. Não recebes imagem — trabalha só com o texto que tens.
+Recebes uma IMAGEM (screenshot da janela activa, possivelmente recortada à janela em foco) JUNTO com: TEXTO extraído (árvore de acessibilidade ou OCR), app detectada, transcrição recente do microfone, transcrição do áudio a tocar quando existir (campo media_audio_text), e um Histórico recente. A imagem é a fonte primária sobre o que está visualmente no ecrã (reels, vídeo, fotos, gráficos, layout); o texto extraído complementa-a e é mais fiável para texto denso de UI. Quando descreveres média (reel/vídeo/foto), baseia-te no que VÊS na imagem e no que se OUVE (media_audio_text), não só na legenda.
 
 COMO USAR O HISTÓRICO RECENTE
 
@@ -314,6 +351,7 @@ impl OpenAiClient {
         memory: &str,
         user_profile: &str,
         matched_interests: &[String],
+        image_png: Option<&[u8]>,
     ) -> Result<FilterResponse> {
         let event_json =
             serde_json::to_string(event).context("failed to serialise ContextEvent")?;
@@ -352,29 +390,33 @@ impl OpenAiClient {
             )
         };
 
+        // Vision mode (image attached) keeps JSON-grammar output and the
+        // standard generation budget: the supported VL models (llava/gemma3)
+        // are non-thinking instruction-followers, so `format:"json"` produces
+        // clean structured output. Only the context window grows, to fit the
+        // image tokens on top of the screen text. (Thinking VL models such as
+        // qwen3-vl are unsupported — `format:"json"` yields empty output and
+        // their reasoning blows past the generation budget.)
+        let vision = image_png.is_some();
+        let format = Some("json");
+        let num_predict = 500u32;
+        let num_ctx = if vision { 8192u32 } else { 6144u32 };
+
         let body = ChatRequest {
             model: self.model.clone(),
             messages: vec![
                 ChatMessage {
                     role: "system".to_string(),
                     content: system_content,
+                    images: Vec::new(),
                 },
-                ChatMessage {
-                    role: "user".to_string(),
-                    content: user_content,
-                },
+                build_user_message(&user_content, image_png),
             ],
-            format: "json",
+            format,
             options: ChatOptions {
                 temperature: 0.3,
-                // 500 so reply-suggestion messages for emails/chats have
-                // room for both citation + reply draft.
-                num_predict: 500,
-                // Worst-case input on this pipeline: ~1000-token system
-                // prompt + ~2000-token screen excerpt (cap 8000 chars
-                // ≈ 2000 tokens) + ~400-token memory ring + 500 reply.
-                // 6144 fits this and stays GPU-only on the OMEN 2060.
-                num_ctx: 6144,
+                num_predict,
+                num_ctx,
             },
             keep_alive: "30m".to_string(),
             stream: false,
@@ -391,15 +433,7 @@ impl OpenAiClient {
                 tokio::time::sleep(Duration::from_millis(wait)).await;
             }
 
-            // Strip the OpenAI-style `/v1` suffix if the user gave the
-            // base_url as `http://omen:11434/v1` — Ollama's native chat
-            // endpoint lives at the bare root.
-            let root = self
-                .base_url
-                .trim_end_matches('/')
-                .trim_end_matches("/v1")
-                .trim_end_matches('/');
-            let url = format!("{}/api/chat", root);
+            let url = ollama_chat_endpoint(&self.base_url);
             let mut req = self.http.post(&url).json(&body);
             if !self.api_key.is_empty() {
                 req = req.bearer_auth(&self.api_key);
@@ -447,8 +481,9 @@ impl OpenAiClient {
             let cost_usd = 0.0;
 
             let raw_content = message.content;
+            let json_slice = extract_json_object(&raw_content);
 
-            let raw: FilterResponseRaw = match serde_json::from_str(&raw_content) {
+            let raw: FilterResponseRaw = match serde_json::from_str(json_slice) {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::error!(
@@ -542,6 +577,50 @@ mod tests {
             parse_error,
             matched_interests: Vec::new(),
         }
+    }
+
+    #[test]
+    fn ollama_chat_endpoint_strips_v1() {
+        assert_eq!(
+            ollama_chat_endpoint("http://omen:11434/v1"),
+            "http://omen:11434/api/chat"
+        );
+        assert_eq!(
+            ollama_chat_endpoint("http://localhost:11434/"),
+            "http://localhost:11434/api/chat"
+        );
+    }
+
+    #[test]
+    fn extract_json_object_handles_thinking_prefix_and_fences() {
+        let s = "Okay, let me think... \n```json\n{\"should_alert\": true}\n```";
+        assert_eq!(extract_json_object(s), "{\"should_alert\": true}");
+        let plain = "{\"a\":1}";
+        assert_eq!(extract_json_object(plain), plain);
+    }
+
+    #[test]
+    fn build_user_message_includes_base64_image_when_present() {
+        let bytes = vec![1u8, 2, 3, 250];
+        let msg = build_user_message("hi", Some(&bytes));
+        let v = serde_json::to_value(&msg).unwrap();
+        let b64 = v["images"][0].as_str().unwrap();
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        assert_eq!(STANDARD.decode(b64).unwrap(), bytes);
+        // No image → no images field serialized.
+        let msg2 = build_user_message("hi", None);
+        let v2 = serde_json::to_value(&msg2).unwrap();
+        assert!(
+            v2.get("images").is_none(),
+            "images must be omitted when absent"
+        );
+    }
+
+    #[test]
+    fn system_prompt_states_it_receives_an_image() {
+        assert!(SYSTEM_PROMPT.contains("IMAGEM"));
+        assert!(SYSTEM_PROMPT.contains("media_audio_text"));
+        assert!(!SYSTEM_PROMPT.contains("Não recebes imagem"));
     }
 
     #[test]

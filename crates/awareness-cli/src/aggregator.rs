@@ -19,6 +19,7 @@ const SCREEN_TEXT_MAX_CHARS: usize = 8000;
 /// who app-switch rapidly. 200 is well above realistic switching rates.
 const APP_HISTORY_MAX: usize = 200;
 
+#[allow(clippy::too_many_arguments)]
 fn build_event(
     current_app: &Option<String>,
     current_window_title: &Option<String>,
@@ -27,6 +28,7 @@ fn build_event(
     app_started_at: &Instant,
     app_history: &VecDeque<(String, u64, Instant)>,
     mic_text_new: bool,
+    media_audio_text: &Option<String>,
 ) -> ContextEvent {
     // 8000 chars (~2000 tokens) covers most a11y dumps (Teams ~20K chars is
     // still truncated but the compose box / visible chat fits). 800 was too
@@ -78,6 +80,7 @@ fn build_event(
         duration_on_app_seconds,
         history_apps_30min,
         mic_text_new,
+        media_audio_text: media_audio_text.clone(),
     }
 }
 
@@ -86,6 +89,7 @@ pub async fn run(
     mut transcript_rx: mpsc::Receiver<TranscriptChunk>,
     event_tx: mpsc::Sender<ContextEvent>,
     cfg: Arc<Config>,
+    mut media_audio_rx: mpsc::Receiver<String>,
 ) -> Result<()> {
     let mut current_app: Option<String> = None;
     let mut current_window_title: Option<String> = None;
@@ -93,15 +97,17 @@ pub async fn run(
     let mut last_screen_text = String::new();
     let mut recent_transcripts: VecDeque<String> = VecDeque::new();
     let mut app_history: VecDeque<(String, u64, Instant)> = VecDeque::new();
+    let mut last_media_audio: Option<String> = None;
 
     let mut interval =
         tokio::time::interval(std::time::Duration::from_secs(cfg.tick_analysis_seconds));
 
     let mut ocr_open = true;
     let mut transcript_open = true;
+    let mut media_audio_open = true;
 
     loop {
-        if !ocr_open && !transcript_open {
+        if !ocr_open && !transcript_open && !media_audio_open {
             return Ok(());
         }
 
@@ -146,6 +152,7 @@ pub async fn run(
                                 &app_started_at,
                                 &app_history,
                                 false,
+                                &last_media_audio,
                             );
                             event_tx.send(event).await?;
                         } else {
@@ -175,9 +182,17 @@ pub async fn run(
                             &app_started_at,
                             &app_history,
                             true,
+                            &last_media_audio,
                         );
                         event_tx.send(event).await?;
                     }
+                }
+            }
+
+            amsg = media_audio_rx.recv(), if media_audio_open => {
+                match amsg {
+                    None => { media_audio_open = false; }
+                    Some(t) => { last_media_audio = Some(t); }
                 }
             }
 
@@ -190,6 +205,7 @@ pub async fn run(
                     &app_started_at,
                     &app_history,
                     false,
+                    &last_media_audio,
                 );
                 event_tx.send(event).await?;
             }
@@ -230,6 +246,9 @@ mod tests {
             log_level: "info".into(),
             a11y_script: std::path::PathBuf::from("a11y.py"),
             backend: BackendKind::Text,
+            vision_enabled: false,
+            vision_max_image_px: awareness_core::config::DEFAULT_VISION_MAX_IMAGE_PX,
+            media_audio_enabled: false,
         })
     }
 
@@ -254,6 +273,7 @@ mod tests {
             &Instant::now(),
             &VecDeque::new(),
             false,
+            &None,
         );
         assert_eq!(ev.window_title.as_deref(), Some("Doc.md — VSCode"));
         assert_eq!(ev.app.as_deref(), Some("vscode"));
@@ -270,6 +290,7 @@ mod tests {
             &Instant::now(),
             &VecDeque::new(),
             false,
+            &None,
         );
         assert_eq!(
             ev.screen_text_excerpt.chars().count(),
@@ -288,8 +309,25 @@ mod tests {
             &Instant::now(),
             &VecDeque::new(),
             false,
+            &None,
         );
         assert_eq!(ev.window_title, None);
+    }
+
+    #[test]
+    fn build_event_carries_media_audio_text() {
+        let media = Some("upbeat music playing".to_string());
+        let ev = build_event(
+            &Some("instagram".into()),
+            &None,
+            "some text",
+            &VecDeque::new(),
+            &Instant::now(),
+            &VecDeque::new(),
+            false,
+            &media,
+        );
+        assert_eq!(ev.media_audio_text.as_deref(), Some("upbeat music playing"));
     }
 
     #[tokio::test]
@@ -297,10 +335,11 @@ mod tests {
         let (ocr_tx, ocr_rx) = mpsc::channel::<OcrOutput>(4);
         let (_transcript_tx, transcript_rx) = mpsc::channel::<crate::whisper::TranscriptChunk>(4);
         let (event_tx, mut event_rx) = mpsc::channel::<ContextEvent>(4);
+        let (_media_tx, media_rx) = mpsc::channel::<String>(4);
 
         let cfg = dummy_cfg();
         let h = tokio::spawn(async move {
-            let _ = run(ocr_rx, transcript_rx, event_tx, cfg).await;
+            let _ = run(ocr_rx, transcript_rx, event_tx, cfg, media_rx).await;
         });
 
         // First OCR: app appears → aggregator should emit an immediate event
@@ -327,10 +366,11 @@ mod tests {
         let (ocr_tx, ocr_rx) = mpsc::channel::<OcrOutput>(4);
         let (_transcript_tx, transcript_rx) = mpsc::channel::<crate::whisper::TranscriptChunk>(4);
         let (event_tx, mut event_rx) = mpsc::channel::<ContextEvent>(4);
+        let (_media_tx, media_rx) = mpsc::channel::<String>(4);
 
         let cfg = dummy_cfg();
         let h = tokio::spawn(async move {
-            let _ = run(ocr_rx, transcript_rx, event_tx, cfg).await;
+            let _ = run(ocr_rx, transcript_rx, event_tx, cfg, media_rx).await;
         });
 
         ocr_tx
@@ -349,6 +389,47 @@ mod tests {
         // The aggregator loop only exits once both senders are dropped; we
         // got what we asserted so abort instead of blocking forever on the
         // periodic-tick branch (3600s cfg).
+        h.abort();
+    }
+
+    #[tokio::test]
+    async fn run_media_audio_text_appears_on_next_event() {
+        let (ocr_tx, ocr_rx) = mpsc::channel::<OcrOutput>(4);
+        let (_transcript_tx, transcript_rx) = mpsc::channel::<crate::whisper::TranscriptChunk>(4);
+        let (event_tx, mut event_rx) = mpsc::channel::<ContextEvent>(8);
+        let (media_tx, media_rx) = mpsc::channel::<String>(4);
+
+        let cfg = dummy_cfg();
+        let h = tokio::spawn(async move {
+            let _ = run(ocr_rx, transcript_rx, event_tx, cfg, media_rx).await;
+        });
+
+        // Send a media audio transcript first.
+        media_tx
+            .send("artist singing a pop song".to_string())
+            .await
+            .unwrap();
+
+        // Give the aggregator a tick to process the media audio message before the OCR arrives.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Trigger an immediate event via app change on OCR.
+        ocr_tx
+            .send(ocr(Some("instagram"), "Instagram Reels", "reel content"))
+            .await
+            .unwrap();
+
+        // The next emitted event should carry the media_audio_text.
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("aggregator must emit within 1s")
+            .expect("event channel closed");
+        assert_eq!(
+            ev.media_audio_text.as_deref(),
+            Some("artist singing a pop song"),
+            "media_audio_text must be carried on next event after media channel message"
+        );
+
         h.abort();
     }
 }

@@ -60,6 +60,11 @@ pub struct ContextEvent {
     /// speech from stale buffer contents on periodic ticks.
     #[serde(default)]
     pub mic_text_new: bool,
+    /// Transcript of currently-playing system audio (e.g. a reel's
+    /// soundtrack) from the audio monitor source. `None` when the
+    /// media-audio lane is off. Populated in sub-phase 1b.
+    #[serde(default)]
+    pub media_audio_text: Option<String>,
 }
 
 /// Structured response from the filter / gate API call.
@@ -84,6 +89,36 @@ pub struct FilterResponse {
     /// the curated interests were actually fed to the LLM.
     #[serde(default)]
     pub matched_interests: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_event_legacy_json_deserializes_without_media_audio() {
+        let legacy = r#"{"timestamp":"2026-05-29T10:00:00Z","app":"vscode","window_title":null,
+            "screen_text_excerpt":"x","mic_text_recent":null,"duration_on_app_seconds":5,
+            "history_apps_30min":[]}"#;
+        let ev: ContextEvent = serde_json::from_str(legacy).unwrap();
+        assert_eq!(ev.media_audio_text, None);
+        assert!(!ev.mic_text_new);
+    }
+
+    #[test]
+    fn context_event_round_trips_media_audio() {
+        let json = r#"{"timestamp":"2026-05-29T10:00:00Z","app":"Instagram","window_title":null,
+            "screen_text_excerpt":"","mic_text_recent":null,"duration_on_app_seconds":1,
+            "history_apps_30min":[],"media_audio_text":"upbeat music, voice says hi"}"#;
+        let ev: ContextEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            ev.media_audio_text.as_deref(),
+            Some("upbeat music, voice says hi")
+        );
+        assert!(serde_json::to_string(&ev)
+            .unwrap()
+            .contains("media_audio_text"));
+    }
 }
 
 impl FilterResponse {

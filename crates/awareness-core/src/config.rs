@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use crate::backend::BackendKind;
 use crate::config_file::{default_frustration_keywords, ConfigFile};
 
+pub const DEFAULT_VISION_MAX_IMAGE_PX: u32 = 1024;
+
 /// Default OpenAI-compatible endpoint: OMEN running Ollama, reachable
 /// over Tailscale. Kept as a constant so `for_android` and tests can
 /// share the same value as the desktop default.
@@ -52,6 +54,13 @@ pub struct Config {
     pub log_level: String,
     pub a11y_script: PathBuf,
     pub backend: BackendKind,
+    /// When true, attach a downscaled screenshot to each analysis call
+    /// (requires a vision-capable `llm_model`, e.g. `qwen3-vl:4b`).
+    pub vision_enabled: bool,
+    /// Longest edge (px) the screenshot is downscaled to before sending.
+    pub vision_max_image_px: u32,
+    /// When true, transcribe system (loopback) audio while a media app is foreground.
+    pub media_audio_enabled: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -115,6 +124,15 @@ pub struct RunArgs {
     /// Path to a TOML config file (overrides default search locations).
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// Enable vision mode: attach a downscaled screenshot to each analysis call.
+    #[arg(long)]
+    pub vision_enabled: Option<bool>,
+    /// Longest edge (px) to downscale the screenshot to before sending.
+    #[arg(long)]
+    pub vision_max_image_px: Option<u32>,
+    /// Enable media-audio transcription when a media app is foreground.
+    #[arg(long)]
+    pub media_audio_enabled: Option<bool>,
 }
 
 fn env_parsed<T: std::str::FromStr>(key: &str) -> Option<T> {
@@ -246,6 +264,22 @@ impl Config {
 
         let tts_command = args.tts_command.or_else(|| toml_cfg.tts.command.clone());
 
+        let vision_enabled = args
+            .vision_enabled
+            .or_else(|| env_parsed::<bool>("AWARENESS_VISION_ENABLED"))
+            .or(toml_cfg.vision.enabled)
+            .unwrap_or(false);
+        let vision_max_image_px = args
+            .vision_max_image_px
+            .or_else(|| env_parsed::<u32>("AWARENESS_VISION_MAX_IMAGE_PX"))
+            .or(toml_cfg.vision.max_image_px)
+            .unwrap_or(DEFAULT_VISION_MAX_IMAGE_PX);
+        let media_audio_enabled = args
+            .media_audio_enabled
+            .or_else(|| env_parsed::<bool>("AWARENESS_MEDIA_AUDIO_ENABLED"))
+            .or(toml_cfg.media_audio.enabled)
+            .unwrap_or(false);
+
         let a11y_script = args
             .a11y_script
             .or_else(|| env_parsed::<PathBuf>("AWARENESS_A11Y_SCRIPT"))
@@ -293,6 +327,9 @@ impl Config {
             log_level,
             a11y_script,
             backend: BackendKind::Text,
+            vision_enabled,
+            vision_max_image_px,
+            media_audio_enabled,
         };
 
         cfg.validate()?;
@@ -366,6 +403,12 @@ impl Config {
                 self.log_level
             );
         }
+        if self.vision_enabled && self.vision_max_image_px < 64 {
+            anyhow::bail!("vision_max_image_px must be >= 64 when vision is enabled");
+        }
+        if self.vision_enabled {
+            tracing::info!("vision enabled: ensure llm_model is vision-capable (e.g. qwen3-vl:4b); current = {}", self.llm_model);
+        }
         Ok(())
     }
 
@@ -413,6 +456,9 @@ impl Config {
             log_level: "info".into(),
             a11y_script: PathBuf::new(),
             backend: BackendKind::Text,
+            vision_enabled: false,
+            vision_max_image_px: DEFAULT_VISION_MAX_IMAGE_PX,
+            media_audio_enabled: false,
         }
     }
 }
@@ -467,7 +513,28 @@ mod tests {
             log_level: "info".into(),
             a11y_script: PathBuf::from("../../scripts/a11y_dump.py"),
             backend: BackendKind::Text,
+            vision_enabled: false,
+            vision_max_image_px: DEFAULT_VISION_MAX_IMAGE_PX,
+            media_audio_enabled: false,
         }
+    }
+
+    #[test]
+    fn vision_defaults_off() {
+        let cfg = valid_config();
+        assert!(!cfg.vision_enabled);
+        assert_eq!(cfg.vision_max_image_px, 1024);
+        assert!(!cfg.media_audio_enabled);
+    }
+
+    #[test]
+    fn validate_rejects_tiny_vision_image_px_when_enabled() {
+        let mut cfg = valid_config();
+        cfg.vision_enabled = true;
+        cfg.vision_max_image_px = 0;
+        assert!(cfg.validate().is_err());
+        cfg.vision_max_image_px = 1024;
+        cfg.validate().expect("valid px must pass");
     }
 
     #[test]

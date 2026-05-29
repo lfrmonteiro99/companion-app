@@ -45,6 +45,9 @@ fn cfg() -> Config {
         log_level: "info".into(),
         a11y_script: std::path::PathBuf::new(),
         backend: awareness_core::backend::BackendKind::Text,
+        vision_enabled: false,
+        vision_max_image_px: awareness_core::config::DEFAULT_VISION_MAX_IMAGE_PX,
+        media_audio_enabled: false,
     }
 }
 
@@ -76,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
                     duration_on_app_seconds: 120,
                     history_apps_30min: vec![("Instagram".into(), 120)],
                     mic_text_new: false,
+                    media_audio_text: None,
                 },
                 vec![],
                 "",
@@ -94,6 +98,7 @@ async fn main() -> anyhow::Result<()> {
                     duration_on_app_seconds: 120,
                     history_apps_30min: vec![("Instagram".into(), 120)],
                     mic_text_new: false,
+                    media_audio_text: None,
                 },
                 vec!["Rust async".into()],
                 "Sobre o utilizador: dev Rust focado em sistemas distribuídos.\nInteresses confirmados pelo utilizador: Rust async",
@@ -110,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
                     duration_on_app_seconds: 45,
                     history_apps_30min: vec![],
                     mic_text_new: false,
+                    media_audio_text: None,
                 },
                 vec![],
                 "",
@@ -120,9 +126,24 @@ async fn main() -> anyhow::Result<()> {
         scenario, matched_interests
     );
 
+    // Optional vision smoke: set SMOKE_IMAGE=/path/to.png to exercise the
+    // image path (forces vision-mode request shape in filter_call).
+    let image_bytes: Option<Vec<u8>> = std::env::var("SMOKE_IMAGE")
+        .ok()
+        .and_then(|p| std::fs::read(&p).ok());
+    if let Some(b) = image_bytes.as_ref() {
+        println!("vision: sending image ({} bytes)", b.len());
+    }
+
     let t0 = std::time::Instant::now();
     let resp = client
-        .filter_call(&event, "", profile_ctx, &matched_interests)
+        .filter_call(
+            &event,
+            "",
+            profile_ctx,
+            &matched_interests,
+            image_bytes.as_deref(),
+        )
         .await?;
     let elapsed = t0.elapsed();
 

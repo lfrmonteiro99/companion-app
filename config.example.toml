@@ -49,3 +49,29 @@ enabled = true
 # on the OMEN takes ~25s, so 30s default keeps the first tick of a cold
 # run from failing.
 # timeout_seconds = 30
+
+[vision]
+# When enabled, a downscaled screenshot of the active window is attached to
+# every analysis call so the model reasons over the actual pixels (reels,
+# video, photos, charts, layout). Requires a vision-capable, NON-THINKING
+# model that follows `format:"json"` — set [llm] model accordingly.
+#
+# Benchmarked on the OMEN RTX 2060 (Ollama 0.24.0):
+#   gemma3:4b   — RECOMMENDED. Clean PT-EU JSON, token-efficient vision,
+#                 fits 6GB alone (no swap), ~11s/call.
+#   llava:7b    — works but answers in English, heavier image tokens.
+#   qwen3-vl:4b — UNSUPPORTED: thinking model; `format:"json"` yields empty
+#                 output and reasoning blows past the token budget.
+# To use vision:  --vision-enabled true --llm-model gemma3:4b
+# Cost: vision-mode calls are slower (~11s) than the text-only path (~3s).
+# enabled = false
+# Longest edge (px) the screenshot is downscaled to before sending. Lower =
+# fewer image tokens = faster/cheaper, but less legible. Min 64.
+# max_image_px = 1024
+
+[media_audio]
+# When enabled, transcribes system (loopback/monitor) audio while a media
+# app is foreground, so a reel's soundtrack feeds the analysis as text.
+# Requires a PipeWire/PulseAudio ".monitor" source; degrades to a warning
+# if none is found. (Implemented in sub-phase 1b.)
+# enabled = false

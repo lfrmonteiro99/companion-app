@@ -221,6 +221,8 @@ async fn main() -> anyhow::Result<()> {
         resp.should_alert, resp.alert_type, resp.urgency
     );
     println!("quick_message: {}", resp.quick_message);
+    println!("suggested_reply: {:?}", resp.suggested_reply);
+    println!("suggested_action: {:?}", resp.suggested_action);
 
     // Sanity checks the user reads at a glance.
     if resp.parse_error.is_some() {

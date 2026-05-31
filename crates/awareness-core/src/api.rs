@@ -80,6 +80,10 @@ struct FilterResponseRaw {
     urgency: String,
     needs_deep_analysis: bool,
     quick_message: String,
+    #[serde(default)]
+    suggested_reply: Option<String>,
+    #[serde(default)]
+    suggested_action: Option<String>,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -283,13 +287,19 @@ URGENCY:
 - "medium" — default para erros accionáveis e pings à espera.
 - "low" — sugestões de melhoria, observações com conselho sem pressão.
 
+CAMPOS OPCIONAIS — suggested_reply / suggested_action
+
+Quando redijas uma resposta para o utilizador enviar (chats, voice_reply), põe essa resposta limpa — só o texto a enviar, sem aspas nem rótulos — em `suggested_reply` (e o quick_message mantém a evidência+conselho). Quando houver uma acção concreta a tomar, põe-na em `suggested_action`. Caso contrário, ambos `null`. NÃO repitas o quick_message nestes campos.
+
 Responde SEMPRE JSON válido neste schema exacto:
 {
   "should_alert": boolean,
   "alert_type": "focus" | "time_spent" | "emotional" | "preparation" | "voice_reply" | "none",
   "urgency": "low" | "medium" | "high",
   "needs_deep_analysis": boolean,
-  "quick_message": string
+  "quick_message": string,
+  "suggested_reply": string | null,
+  "suggested_action": string | null
 }"#;
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -495,6 +505,8 @@ impl OpenAiClient {
                         urgency: "low".to_string(),
                         needs_deep_analysis: false,
                         quick_message: String::new(),
+                        suggested_reply: None,
+                        suggested_action: None,
                         tokens_in,
                         tokens_out,
                         cost_usd,
@@ -510,6 +522,8 @@ impl OpenAiClient {
                 urgency: raw.urgency,
                 needs_deep_analysis: raw.needs_deep_analysis,
                 quick_message: raw.quick_message,
+                suggested_reply: raw.suggested_reply,
+                suggested_action: raw.suggested_action,
                 tokens_in,
                 tokens_out,
                 cost_usd,
@@ -569,6 +583,8 @@ mod tests {
             urgency: "low".into(),
             needs_deep_analysis: false,
             quick_message: String::new(),
+            suggested_reply: None,
+            suggested_action: None,
             tokens_in: 10,
             tokens_out: 20,
             cost_usd: 0.000018,
@@ -619,6 +635,18 @@ mod tests {
         assert!(SYSTEM_PROMPT.contains("IMAGEM"));
         assert!(SYSTEM_PROMPT.contains("media_audio_text"));
         assert!(!SYSTEM_PROMPT.contains("Não recebes imagem"));
+    }
+
+    #[test]
+    fn system_prompt_contains_suggested_reply_schema() {
+        assert!(
+            SYSTEM_PROMPT.contains("suggested_reply"),
+            "SYSTEM_PROMPT must instruct the model to populate suggested_reply"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("suggested_action"),
+            "SYSTEM_PROMPT must instruct the model to populate suggested_action"
+        );
     }
 
     #[test]

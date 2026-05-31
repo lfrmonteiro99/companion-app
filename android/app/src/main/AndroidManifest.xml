@@ -75,6 +75,14 @@
             android:name=".RatingReceiver"
             android:exported="false" />
 
+        <receiver
+            android:name=".CopyReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".MuteReceiver"
+            android:exported="false" />
+
         <service
             android:name=".AwarenessService"
             android:foregroundServiceType="mediaProjection|microphone|specialUse"

@@ -165,6 +165,69 @@ async fn main() -> anyhow::Result<()> {
                 vec![],
                 "",
             ),
+            // Portuguese history article — strong seed for Canal 1.
+            // Target: content_niche = "portugal_history".
+            "pt_history" => (
+                ContextEvent {
+                    timestamp: Utc::now(),
+                    app: Some("Chrome".into()),
+                    window_title: Some("Wikipedia".into()),
+                    screen_text_excerpt:
+                        "Batalha de Aljubarrota (1385): D. João I derrota Castela e garante a \
+                         independência de Portugal. Nuno Álvares Pereira lidera as tropas \
+                         portuguesas numa vitória decisiva que molda séculos de história ibérica."
+                            .into(),
+                    mic_text_recent: None,
+                    duration_on_app_seconds: 30,
+                    history_apps_30min: vec![("Chrome".into(), 30)],
+                    mic_text_new: false,
+                    media_audio_text: None,
+                },
+                vec![],
+                "",
+            ),
+            // Portuguese dark/occult content — strong seed for Canal 2.
+            // Target: content_niche = "ghost_stories_real".
+            "pt_dark" => (
+                ContextEvent {
+                    timestamp: Utc::now(),
+                    app: Some("Chrome".into()),
+                    window_title: Some("Lugares Abandonados Portugal".into()),
+                    screen_text_excerpt:
+                        "Convento da Serra do Bouro, abandonado desde 1834. Relatos de aparições \
+                         de monges e passos no claustro à noite. Moradores locais evitam o local \
+                         após o pôr do sol. Fotografias mostram figuras encapuzadas nas ruínas."
+                            .into(),
+                    mic_text_recent: None,
+                    duration_on_app_seconds: 45,
+                    history_apps_30min: vec![("Chrome".into(), 45)],
+                    mic_text_new: false,
+                    media_audio_text: None,
+                },
+                vec![],
+                "",
+            ),
+            // Non-Portuguese history — should NOT trigger content channels.
+            // Target: content_niche = null, content_theme = null.
+            "non_pt_history" => (
+                ContextEvent {
+                    timestamp: Utc::now(),
+                    app: Some("Chrome".into()),
+                    window_title: Some("Wikipedia".into()),
+                    screen_text_excerpt:
+                        "The French Revolution began in 1789 with the storming of the Bastille. \
+                         King Louis XVI was executed in 1793. The period transformed France and \
+                         influenced political thought across Europe."
+                            .into(),
+                    mic_text_recent: None,
+                    duration_on_app_seconds: 30,
+                    history_apps_30min: vec![("Chrome".into(), 30)],
+                    mic_text_new: false,
+                    media_audio_text: None,
+                },
+                vec![],
+                "",
+            ),
             _ => (
                 ContextEvent {
                     timestamp: Utc::now(),
@@ -223,6 +286,8 @@ async fn main() -> anyhow::Result<()> {
     println!("quick_message: {}", resp.quick_message);
     println!("suggested_reply: {:?}", resp.suggested_reply);
     println!("suggested_action: {:?}", resp.suggested_action);
+    println!("content_niche: {:?}", resp.content_niche);
+    println!("content_theme: {:?}", resp.content_theme);
 
     // Sanity checks the user reads at a glance.
     if resp.parse_error.is_some() {

@@ -82,6 +82,13 @@ pub struct FilterResponse {
     /// A concrete next action the user could take (a CTA). `None` when none.
     #[serde(default)]
     pub suggested_action: Option<String>,
+    /// When the screen is a strong seed for one of the user's content
+    /// channels, the niche key to generate for (e.g. "portugal_history").
+    #[serde(default)]
+    pub content_niche: Option<String>,
+    /// Concise PT-EU seed topic derived from the screen, to feed generation.
+    #[serde(default)]
+    pub content_theme: Option<String>,
     pub tokens_in: u32,
     pub tokens_out: u32,
     pub cost_usd: f64,
@@ -141,6 +148,8 @@ mod tests {
             quick_message: "João há 9 min: PR pronto?".into(),
             suggested_reply: Some("Ainda na review, fecho antes das 18h.".into()),
             suggested_action: Some("Responde no Teams".into()),
+            content_niche: None,
+            content_theme: None,
             tokens_in: 5,
             tokens_out: 10,
             cost_usd: 0.0,
@@ -154,6 +163,53 @@ mod tests {
             Some("Ainda na review, fecho antes das 18h.")
         );
         assert_eq!(back.suggested_action.as_deref(), Some("Responde no Teams"));
+    }
+
+    #[test]
+    fn filter_response_legacy_json_content_niche_defaults_to_none() {
+        // JSON persisted by previous versions has no content_niche /
+        // content_theme — #[serde(default)] must keep old JSONL readable.
+        let legacy = r#"{
+          "should_alert": true,
+          "alert_type": "voice_reply",
+          "urgency": "medium",
+          "needs_deep_analysis": false,
+          "quick_message": "João há 9 min: PR #142 pronto?",
+          "tokens_in": 10,
+          "tokens_out": 20,
+          "cost_usd": 0.0
+        }"#;
+        let r: crate::types::FilterResponse = serde_json::from_str(legacy).unwrap();
+        assert_eq!(r.content_niche, None);
+        assert_eq!(r.content_theme, None);
+    }
+
+    #[test]
+    fn filter_response_content_idea_round_trips() {
+        let r = crate::types::FilterResponse {
+            should_alert: true,
+            alert_type: "content_idea".into(),
+            urgency: "low".into(),
+            needs_deep_analysis: false,
+            quick_message:
+                "Isto dava um vídeo do canal Portugal histórico: Batalha de Aljubarrota.".into(),
+            suggested_reply: None,
+            suggested_action: None,
+            content_niche: Some("portugal_history".into()),
+            content_theme: Some("Batalha de Aljubarrota e a independência de Portugal".into()),
+            tokens_in: 5,
+            tokens_out: 10,
+            cost_usd: 0.0,
+            parse_error: None,
+            matched_interests: Vec::new(),
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        let back: crate::types::FilterResponse = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.content_niche.as_deref(), Some("portugal_history"));
+        assert_eq!(
+            back.content_theme.as_deref(),
+            Some("Batalha de Aljubarrota e a independência de Portugal")
+        );
     }
 
     #[test]
@@ -185,6 +241,8 @@ impl FilterResponse {
             quick_message: quick_message.into(),
             suggested_reply: None,
             suggested_action: None,
+            content_niche: None,
+            content_theme: None,
             tokens_in: 0,
             tokens_out: 0,
             cost_usd: 0.0,

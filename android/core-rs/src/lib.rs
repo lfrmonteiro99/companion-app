@@ -312,6 +312,8 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
                     quick_message: format!("api error: {e}"),
                     suggested_reply: None,
                     suggested_action: None,
+                    content_niche: None,
+                    content_theme: None,
                     tokens_in: 0,
                     tokens_out: 0,
                     cost_usd: 0.0,

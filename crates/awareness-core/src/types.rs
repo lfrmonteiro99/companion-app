@@ -75,6 +75,13 @@ pub struct FilterResponse {
     pub urgency: String,    // "low"|"medium"|"high"
     pub needs_deep_analysis: bool,
     pub quick_message: String,
+    /// A ready-to-use reply the user can copy/paste/insert (chats, voice_reply).
+    /// `None` when no reply is applicable.
+    #[serde(default)]
+    pub suggested_reply: Option<String>,
+    /// A concrete next action the user could take (a CTA). `None` when none.
+    #[serde(default)]
+    pub suggested_action: Option<String>,
     pub tokens_in: u32,
     pub tokens_out: u32,
     pub cost_usd: f64,
@@ -106,6 +113,50 @@ mod tests {
     }
 
     #[test]
+    fn filter_response_legacy_json_suggested_fields_default_to_none() {
+        // JSON persisted by previous versions has no suggested_reply /
+        // suggested_action — #[serde(default)] must keep old JSONL readable.
+        let legacy = r#"{
+          "should_alert": true,
+          "alert_type": "voice_reply",
+          "urgency": "medium",
+          "needs_deep_analysis": false,
+          "quick_message": "João há 9 min: PR #142 pronto?",
+          "tokens_in": 10,
+          "tokens_out": 20,
+          "cost_usd": 0.0
+        }"#;
+        let r: crate::types::FilterResponse = serde_json::from_str(legacy).unwrap();
+        assert_eq!(r.suggested_reply, None);
+        assert_eq!(r.suggested_action, None);
+    }
+
+    #[test]
+    fn filter_response_round_trips_suggested_fields() {
+        let r = crate::types::FilterResponse {
+            should_alert: true,
+            alert_type: "voice_reply".into(),
+            urgency: "medium".into(),
+            needs_deep_analysis: false,
+            quick_message: "João há 9 min: PR pronto?".into(),
+            suggested_reply: Some("Ainda na review, fecho antes das 18h.".into()),
+            suggested_action: Some("Responde no Teams".into()),
+            tokens_in: 5,
+            tokens_out: 10,
+            cost_usd: 0.0,
+            parse_error: None,
+            matched_interests: Vec::new(),
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        let back: crate::types::FilterResponse = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            back.suggested_reply.as_deref(),
+            Some("Ainda na review, fecho antes das 18h.")
+        );
+        assert_eq!(back.suggested_action.as_deref(), Some("Responde no Teams"));
+    }
+
+    #[test]
     fn context_event_round_trips_media_audio() {
         let json = r#"{"timestamp":"2026-05-29T10:00:00Z","app":"Instagram","window_title":null,
             "screen_text_excerpt":"","mic_text_recent":null,"duration_on_app_seconds":1,
@@ -132,6 +183,8 @@ impl FilterResponse {
             urgency: "low".into(),
             needs_deep_analysis: false,
             quick_message: quick_message.into(),
+            suggested_reply: None,
+            suggested_action: None,
             tokens_in: 0,
             tokens_out: 0,
             cost_usd: 0.0,

@@ -253,6 +253,10 @@ class AwarenessService : Service() {
         val cost = obj.optDouble("cost_usd", 0.0)
         val message = obj.optString("quick_message", "")
         val urgency = obj.optString("urgency", "low")
+        // Structured action fields added in A1/A2. optString returns "" for
+        // missing keys so we normalise to null to keep downstream logic clean.
+        val suggestedReply = obj.optString("suggested_reply", "").takeIf { it.isNotBlank() }
+        val suggestedAction = obj.optString("suggested_action", "").takeIf { it.isNotBlank() }
 
         // Surface the interests that were actually fed to the model so
         // the user can see the filter at work (and debug false misses).
@@ -274,7 +278,7 @@ class AwarenessService : Service() {
             }
         }
 
-        handleResponse(tickId, responseJson, alertType, shouldAlert, message, urgency)
+        handleResponse(tickId, responseJson, alertType, shouldAlert, message, urgency, suggestedReply, suggestedAction)
     }
 
     private fun handleResponse(
@@ -284,6 +288,8 @@ class AwarenessService : Service() {
         shouldAlert: Boolean,
         body: String,
         urgency: String,
+        suggestedReply: String? = null,
+        suggestedAction: String? = null,
     ) {
         if (!shouldAlert) {
             TraceLog.notificationSuppressed(tickId, "model said should_alert=false")
@@ -293,8 +299,18 @@ class AwarenessService : Service() {
             TraceLog.notificationSuppressed(tickId, "empty quick_message")
             return
         }
+        // Mute enforcement: if the current app is muted, suppress the
+        // notification but still log to AlertLog so the user can see the
+        // alert was filtered (consistent with the existing behaviour for
+        // should_alert=false).
+        val currentApp = FocusedApp.currentPackage(this)
+            ?: AwarenessAccessibilityService.latest()?.packageName
+        if (currentApp != null && MuteReceiver.isMuted(this, currentApp)) {
+            TraceLog.notificationSuppressed(tickId, "muted:$currentApp")
+            return
+        }
         val title = alertType.replaceFirstChar { it.uppercase() }
-        postAlert(title, body, urgency)
+        postAlert(title, body, urgency, suggestedReply, suggestedAction)
         TraceLog.notificationPosted(tickId, alertType, urgency)
 
         AlertLog.append(
@@ -337,7 +353,13 @@ class AwarenessService : Service() {
         return pkg in canvasHeavyApps
     }
 
-    private fun postAlert(title: String, body: String, urgency: String) {
+    private fun postAlert(
+        title: String,
+        body: String,
+        urgency: String,
+        suggestedReply: String? = null,
+        suggestedAction: String? = null,
+    ) {
         val priority = when (urgency) {
             "high" -> NotificationCompat.PRIORITY_HIGH
             "medium" -> NotificationCompat.PRIORITY_DEFAULT
@@ -356,6 +378,11 @@ class AwarenessService : Service() {
         // side has enough context to store something meaningful on
         // either side of the like/dislike axis.
         val topic = body.take(160)
+        val piFlags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+
+        // Request codes are spread across a range to avoid PendingIntent
+        // collisions between concurrent notifications. notifId * 10 gives
+        // 10 slots per notification — enough for all 4 possible actions.
         val likeIntent = Intent(this, RatingReceiver::class.java)
             .setAction(RatingReceiver.ACTION_RATE)
             .putExtra(RatingReceiver.EXTRA_TOPIC, topic)
@@ -366,12 +393,33 @@ class AwarenessService : Service() {
             .putExtra(RatingReceiver.EXTRA_TOPIC, topic)
             .putExtra(RatingReceiver.EXTRA_POSITIVE, false)
             .putExtra(RatingReceiver.EXTRA_NOTIF_ID, notifId)
+        val likePi = PendingIntent.getBroadcast(this, notifId * 10 + 0, likeIntent, piFlags)
+        val dislikePi = PendingIntent.getBroadcast(this, notifId * 10 + 1, dislikeIntent, piFlags)
 
-        val piFlags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        val likePi = PendingIntent.getBroadcast(this, notifId * 2, likeIntent, piFlags)
-        val dislikePi = PendingIntent.getBroadcast(this, notifId * 2 + 1, dislikeIntent, piFlags)
+        // "Copiar resposta" — only when the model provided a suggested reply.
+        val copyPi = suggestedReply?.let { reply ->
+            val copyIntent = Intent(this, CopyReceiver::class.java)
+                .setAction(CopyReceiver.ACTION_COPY)
+                .putExtra(CopyReceiver.EXTRA_TEXT, reply)
+                .putExtra(CopyReceiver.EXTRA_NOTIF_ID, notifId)
+            PendingIntent.getBroadcast(this, notifId * 10 + 2, copyIntent, piFlags)
+        }
 
-        val notif = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+        // "Silenciar 1h" — always present. App name from the current foreground
+        // app the same way the rest of the service uses it.
+        val currentApp = FocusedApp.currentPackage(this)
+            ?: AwarenessAccessibilityService.latest()?.packageName
+            ?: ""
+        val muteIntent = Intent(this, MuteReceiver::class.java)
+            .setAction(MuteReceiver.ACTION_MUTE)
+            .putExtra(MuteReceiver.EXTRA_APP, currentApp)
+            .putExtra(MuteReceiver.EXTRA_NOTIF_ID, notifId)
+        val mutePi = PendingIntent.getBroadcast(this, notifId * 10 + 3, muteIntent, piFlags)
+
+        // Action budget: Android shows ~3 visible actions. Priority:
+        //   with suggestedReply  → [Copiar resposta, Silenciar 1h, 👍]
+        //   without suggestedReply → [Silenciar 1h, 👍, 👎]
+        val builder = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
@@ -379,11 +427,20 @@ class AwarenessService : Service() {
             .setPriority(priority)
             .setAutoCancel(true)
             .setContentIntent(tap)
-            .addAction(android.R.drawable.ic_menu_add, "Mais disto", likePi)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Não interessa", dislikePi)
-            .build()
+
+        if (copyPi != null) {
+            builder.addAction(android.R.drawable.ic_menu_edit, "Copiar resposta", copyPi)
+            builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Silenciar 1h", mutePi)
+            builder.addAction(android.R.drawable.ic_menu_add, "Mais disto", likePi)
+            // 👎 omitted to stay within 3-visible-action budget
+        } else {
+            builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Silenciar 1h", mutePi)
+            builder.addAction(android.R.drawable.ic_menu_add, "Mais disto", likePi)
+            builder.addAction(android.R.drawable.ic_delete, "Não interessa", dislikePi)
+        }
+
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(notifId, notif)
+        nm.notify(notifId, builder.build())
 
         if (Settings.ttsEnabled(this)) Tts.speak(body)
     }

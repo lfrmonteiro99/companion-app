@@ -84,6 +84,10 @@ struct FilterResponseRaw {
     suggested_reply: Option<String>,
     #[serde(default)]
     suggested_action: Option<String>,
+    #[serde(default)]
+    content_niche: Option<String>,
+    #[serde(default)]
+    content_theme: Option<String>,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -282,24 +286,44 @@ Quando NÃO alertar em scroll: feed-chrome sem post aberto, listagem de thumbnai
 
 alert_type fica "focus" para scroll. urgência é quase sempre "low".
 
+CAMPOS OPCIONAIS — suggested_reply / suggested_action
+
+Quando redijas uma resposta para o utilizador enviar (chats, voice_reply), põe essa resposta limpa — só o texto a enviar, sem aspas nem rótulos — em `suggested_reply` (e o quick_message mantém a evidência+conselho). Quando houver uma acção concreta a tomar, põe-na em `suggested_action`. Caso contrário, ambos `null`. NÃO repitas o quick_message nestes campos.
+
+CANAIS DE CONTEÚDO (gatilho extra)
+
+O utilizador tem 2 canais de Instagram onde gera vídeos a partir de história portuguesa. Quando o ecrã mostra material que serve DIRECTAMENTE de semente para um deles, PROPÕE uma ideia de conteúdo. Atenção: propor um vídeo a partir do que ele está a ler É o valor — NÃO é narrar o ecrã. Por isso, perante um facto/figura/evento histórico português claro, NÃO fiques calado por "estar só a descrever": propõe.
+
+ROTEAMENTO (decide o canal por esta ordem, pára no primeiro que bate):
+1. Há QUALQUER elemento sombrio/occulto — fantasma, assombração, cripta/mosteiro/lugar abandonado, relíquia/maldição, Inquisição, paranormal, morte misteriosa? → SEMPRE CANAL 2, content_niche = "ghost_stories_real". MESMO que também seja história portuguesa (o sombrio ganha sempre ao histórico-normal).
+2. Senão, é história/cultura/figura/evento/local PORTUGUÊS (não-sombrio)? → CANAL 1, content_niche = "portugal_history" (ou "portugal_alt_history" se for claramente um cenário "e se" alternativo).
+3. Senão (não-português, ou sem ângulo concreto) → não proponhas: content_niche e content_theme = null.
+
+Quando disparas: alert_type = "content_idea", urgency = "low", content_niche = a key exacta, content_theme = tópico-semente conciso em PT-EU (uma frase), quick_message = "Isto dava um vídeo: <ângulo concreto>".
+
+EXEMPLOS:
+- "Batalha de Aljubarrota (1385), D. João I derrota Castela" → CANAL 1. content_niche="portugal_history", content_theme="A Batalha de Aljubarrota e como garantiu a independência de Portugal", quick_message="Isto dava um vídeo: Aljubarrota, a batalha que salvou a independência de Portugal em 1385."
+- "Convento abandonado, relatos de aparições de monges" → CANAL 2 (tem assombração). content_niche="ghost_stories_real".
+- "The French Revolution, 1789" → null (não é português, sem elemento sombrio).
+
+Não forces: se não é português E não é claramente sombrio, content_niche=null. Em scroll de entretenimento sem matéria histórica/sombria → fica calado.
+
 URGENCY:
 - "high" — prazo imediato (reunião a começar, crash bloqueante, deadline a estourar).
 - "medium" — default para erros accionáveis e pings à espera.
 - "low" — sugestões de melhoria, observações com conselho sem pressão.
 
-CAMPOS OPCIONAIS — suggested_reply / suggested_action
-
-Quando redijas uma resposta para o utilizador enviar (chats, voice_reply), põe essa resposta limpa — só o texto a enviar, sem aspas nem rótulos — em `suggested_reply` (e o quick_message mantém a evidência+conselho). Quando houver uma acção concreta a tomar, põe-na em `suggested_action`. Caso contrário, ambos `null`. NÃO repitas o quick_message nestes campos.
-
 Responde SEMPRE JSON válido neste schema exacto:
 {
   "should_alert": boolean,
-  "alert_type": "focus" | "time_spent" | "emotional" | "preparation" | "voice_reply" | "none",
+  "alert_type": "focus" | "time_spent" | "emotional" | "preparation" | "voice_reply" | "content_idea" | "none",
   "urgency": "low" | "medium" | "high",
   "needs_deep_analysis": boolean,
   "quick_message": string,
   "suggested_reply": string | null,
-  "suggested_action": string | null
+  "suggested_action": string | null,
+  "content_niche": string | null,
+  "content_theme": string | null
 }"#;
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -507,6 +531,8 @@ impl OpenAiClient {
                         quick_message: String::new(),
                         suggested_reply: None,
                         suggested_action: None,
+                        content_niche: None,
+                        content_theme: None,
                         tokens_in,
                         tokens_out,
                         cost_usd,
@@ -524,6 +550,8 @@ impl OpenAiClient {
                 quick_message: raw.quick_message,
                 suggested_reply: raw.suggested_reply,
                 suggested_action: raw.suggested_action,
+                content_niche: raw.content_niche,
+                content_theme: raw.content_theme,
                 tokens_in,
                 tokens_out,
                 cost_usd,
@@ -585,6 +613,8 @@ mod tests {
             quick_message: String::new(),
             suggested_reply: None,
             suggested_action: None,
+            content_niche: None,
+            content_theme: None,
             tokens_in: 10,
             tokens_out: 20,
             cost_usd: 0.000018,
@@ -646,6 +676,26 @@ mod tests {
         assert!(
             SYSTEM_PROMPT.contains("suggested_action"),
             "SYSTEM_PROMPT must instruct the model to populate suggested_action"
+        );
+    }
+
+    #[test]
+    fn system_prompt_contains_content_channels_section() {
+        assert!(
+            SYSTEM_PROMPT.contains("CANAIS DE CONTEÚDO"),
+            "SYSTEM_PROMPT must contain the content channels section"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("content_niche"),
+            "SYSTEM_PROMPT must reference content_niche in schema"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("content_theme"),
+            "SYSTEM_PROMPT must reference content_theme in schema"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("content_idea"),
+            "SYSTEM_PROMPT must include content_idea in alert_type enum"
         );
     }
 

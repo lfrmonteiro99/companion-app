@@ -11,8 +11,20 @@ pub const DEFAULT_VISION_MAX_IMAGE_PX: u32 = 1024;
 /// over Tailscale. Kept as a constant so `for_android` and tests can
 /// share the same value as the desktop default.
 pub const DEFAULT_LLM_BASE_URL: &str = "http://100.68.73.123:11434/v1";
-pub const DEFAULT_LLM_MODEL: &str = "qwen3:8b";
-pub const DEFAULT_LLM_TIMEOUT_SECONDS: u64 = 30;
+// gemma3:4b (not qwen3:8b): non-thinking, ~5s warm vs qwen3:8b's 24-60s+
+// (its thinking phase burns the generation budget and blows the 30s timeout
+// → every analysis call errored → zero alerts). gemma3:4b emits valid output
+// only under structured-outputs (see api::filter_response_schema), and the
+// same ~3.3GB model serves both the text and vision paths on the 6GB OMEN.
+pub const DEFAULT_LLM_MODEL: &str = "gemma3:4b";
+// 90s, not 30s. Measured on the live OMEN: a cold model load is ~20s and a
+// warm structured call over a ~5k-token prompt is 29-37s (slower under GPU
+// contention from other Ollama clients on the shared 6GB card). 30s timed out
+// even warm → retries → zero alerts. 90s absorbs a cold load comfortably; warm
+// calls still return in ~30s well under the ceiling (the timeout is a cap, not
+// a wait). The real latency win is dedicating the OMEN GPU to one model and/or
+// trimming the prompt — tracked separately; this just stops the silent drops.
+pub const DEFAULT_LLM_TIMEOUT_SECONDS: u64 = 90;
 
 #[derive(Debug, Clone)]
 pub struct Config {

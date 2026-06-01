@@ -18,11 +18,14 @@ use std::time::Duration;
 struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
-    /// "json" forces structured output. Equivalent to OpenAI's
-    /// `response_format: { type: "json_object" }`. Omitted in vision mode
-    /// because thinking models (qwen3-vl) produce empty output with format:"json".
+    /// Ollama structured-outputs: a JSON Schema object that grammar-constrains
+    /// the model to emit exactly the FilterResponse fields (correct names,
+    /// types, and `urgency` enum). This replaces the looser `format:"json"`,
+    /// which let gemma3:4b invent field names (`alert_message` instead of
+    /// `should_alert`) → parse failures → silent dropped alerts. See
+    /// `filter_response_schema()`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    format: Option<&'static str>,
+    format: Option<serde_json::Value>,
     options: ChatOptions,
     /// How long Ollama keeps the model loaded in (V)RAM after this
     /// call. "30m" avoids paying ~25s of cold-load each time another
@@ -91,6 +94,40 @@ struct FilterResponseRaw {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// JSON Schema for the model's structured output (Ollama's `format` field).
+///
+/// Grammar-constrains generation to the exact `FilterResponseRaw` shape: the
+/// five required fields must be present with the correct names/types, `urgency`
+/// is a closed enum, and the four action/content fields are optional and
+/// nullable. `alert_type` is a free string by design — the Android consumer
+/// treats it as one (`optString` + prefix checks), so enum-locking it here
+/// could forbid a legitimate value. Required-field locking is what fixes the
+/// silent-drop bug: gemma3:4b under plain `format:"json"` emitted `alert_message`
+/// instead of `should_alert`, failing serde and dropping the alert.
+fn filter_response_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "should_alert": { "type": "boolean" },
+            "alert_type": { "type": "string" },
+            "urgency": { "type": "string", "enum": ["low", "medium", "high"] },
+            "needs_deep_analysis": { "type": "boolean" },
+            "quick_message": { "type": "string" },
+            "suggested_reply": { "type": ["string", "null"] },
+            "suggested_action": { "type": ["string", "null"] },
+            "content_niche": { "type": ["string", "null"] },
+            "content_theme": { "type": ["string", "null"] }
+        },
+        "required": [
+            "should_alert",
+            "alert_type",
+            "urgency",
+            "needs_deep_analysis",
+            "quick_message"
+        ]
+    })
+}
 
 /// Derive Ollama's native chat endpoint, tolerating a trailing `/v1` or `/`.
 pub(crate) fn ollama_chat_endpoint(base_url: &str) -> String {
@@ -358,21 +395,26 @@ impl OpenAiClient {
         })
     }
 
-    /// Build an `OpenAiClient` from an API key only. Retained for the
-    /// Android JNI bridge, which still passes the OpenAI key parameter
-    /// from Kotlin even though the desktop CLI now hits a local Ollama.
-    /// Defaults: OMEN endpoint + `qwen3:8b`, 30s timeout.
+    /// Build an `OpenAiClient` from an API key only. Retained as a fallback
+    /// constructor; defaults are sourced from the shared `DEFAULT_*` constants
+    /// so this can never silently diverge from `Config` again. (It previously
+    /// hardcoded `qwen3:8b` independently of `DEFAULT_LLM_MODEL`, so changing
+    /// the config default did nothing on the path that used this — the exact
+    /// trap that pinned the Android app to the slow thinking model.) The
+    /// Android bridge now builds via `new(&Config)`, making config authoritative.
     pub fn with_api_key(api_key: String) -> Result<Self> {
-        let base_url = "http://100.68.73.123:11434/v1".to_string();
+        let base_url = crate::config::DEFAULT_LLM_BASE_URL.to_string();
         warn_if_insecure_endpoint(&base_url);
         let http = Client::builder()
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(
+                crate::config::DEFAULT_LLM_TIMEOUT_SECONDS,
+            ))
             .build()
             .context("failed to build HTTP client")?;
         Ok(Self {
             http,
             base_url,
-            model: "qwen3:8b".to_string(),
+            model: crate::config::DEFAULT_LLM_MODEL.to_string(),
             api_key,
         })
     }
@@ -422,16 +464,19 @@ impl OpenAiClient {
             )
         };
 
-        // Vision mode (image attached) keeps JSON-grammar output and the
-        // standard generation budget: the supported VL models (llava/gemma3)
-        // are non-thinking instruction-followers, so `format:"json"` produces
-        // clean structured output. Only the context window grows, to fit the
-        // image tokens on top of the screen text. (Thinking VL models such as
-        // qwen3-vl are unsupported — `format:"json"` yields empty output and
-        // their reasoning blows past the generation budget.)
+        // Both the text and vision paths run gemma3:4b — a non-thinking
+        // instruction-follower — and both use the SAME structured-outputs
+        // schema (filter_response_schema). gemma3:4b honours the JSON-Schema
+        // grammar with or without an image attached, so we get correct field
+        // names in one shot. `num_predict` stays small: there is no thinking
+        // budget to burn, and a complete FilterResponse is ~60-150 tokens;
+        // 256 leaves headroom for the longest SCROLL message without risking
+        // a mid-JSON truncation (which would parse-fail → drop the alert).
+        // (Thinking VL models such as qwen3-vl remain unsupported: under a
+        // grammar they emit empty output and blow past the generation budget.)
         let vision = image_png.is_some();
-        let format = Some("json");
-        let num_predict = 500u32;
+        let format = Some(filter_response_schema());
+        let num_predict = 256u32;
         let num_ctx = if vision { 8192u32 } else { 6144u32 };
 
         let body = ChatRequest {

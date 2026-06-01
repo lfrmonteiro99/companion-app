@@ -167,7 +167,12 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_configure<'local>
             }
         };
         let config = Config::for_android(key, budget_usd_daily);
-        let client = match OpenAiClient::with_api_key(config.openai_api_key.clone()) {
+        // Build the client FROM the config (not with_api_key) so the model,
+        // base_url, and timeout all come from one place. with_api_key used to
+        // hardcode qwen3:8b, which silently overrode the config default and
+        // pinned the device to the slow thinking model → calls timed out →
+        // zero alerts. new(&config) makes config authoritative.
+        let client = match OpenAiClient::new(&config) {
             Ok(c) => c,
             Err(e) => {
                 log::error!("configure: failed to build OpenAiClient: {e}");

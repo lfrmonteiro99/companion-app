@@ -105,6 +105,30 @@ pub struct FilterResponse {
     pub matched_interests: Vec<String>,
 }
 
+impl FilterResponse {
+    /// Convenience for constructing a "nothing happened" response (gate
+    /// skip, budget exceeded, api error) without spelling out every
+    /// field in every call site.
+    pub fn short_circuit(alert_type: impl Into<String>, quick_message: impl Into<String>) -> Self {
+        Self {
+            should_alert: false,
+            alert_type: alert_type.into(),
+            urgency: "low".into(),
+            needs_deep_analysis: false,
+            quick_message: quick_message.into(),
+            suggested_reply: None,
+            suggested_action: None,
+            content_niche: None,
+            content_theme: None,
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_usd: 0.0,
+            parse_error: None,
+            matched_interests: Vec::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,29 +249,5 @@ mod tests {
         assert!(serde_json::to_string(&ev)
             .unwrap()
             .contains("media_audio_text"));
-    }
-}
-
-impl FilterResponse {
-    /// Convenience for constructing a "nothing happened" response (gate
-    /// skip, budget exceeded, api error) without spelling out every
-    /// field in every call site.
-    pub fn short_circuit(alert_type: impl Into<String>, quick_message: impl Into<String>) -> Self {
-        Self {
-            should_alert: false,
-            alert_type: alert_type.into(),
-            urgency: "low".into(),
-            needs_deep_analysis: false,
-            quick_message: quick_message.into(),
-            suggested_reply: None,
-            suggested_action: None,
-            content_niche: None,
-            content_theme: None,
-            tokens_in: 0,
-            tokens_out: 0,
-            cost_usd: 0.0,
-            parse_error: None,
-            matched_interests: Vec::new(),
-        }
     }
 }

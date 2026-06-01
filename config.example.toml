@@ -40,27 +40,34 @@ enabled = true
 # server over Tailscale. Override with --llm-base-url or
 # AWARENESS_LLM_BASE_URL.
 # base_url = "http://100.68.73.123:11434/v1"
-# Local model identifier as known to the endpoint. qwen3:8b is the
-# default after benchmarking on the OMEN RTX 2060: clean PT-EU register,
-# correct chat-direction reading, no Chinese leak (qwen2.5:7b leaks it),
-# ~3s warm latency for a 200-token reply.
-# model = "qwen3:8b"
-# Hard HTTP timeout per chat-completion call. Cold-load of an 8B Q4 model
-# on the OMEN takes ~25s, so 30s default keeps the first tick of a cold
-# run from failing.
-# timeout_seconds = 30
+# Local model identifier as known to the endpoint. gemma3:4b is the default:
+# non-thinking, ~5s warm, and (critically) it serves BOTH the text and vision
+# paths from one ~3.3GB model that fits the 6GB OMEN with no eviction. It only
+# emits valid output under structured-outputs (the request sends the
+# FilterResponse JSON Schema as `format`), which is wired in by default.
+# NOTE: qwen3:8b is retired here — it is a thinking model whose reasoning burns
+# the generation budget and pushes warm latency to 24-60s+, over the timeout
+# below, which silently zeroed out all alerts.
+# model = "gemma3:4b"
+# Hard HTTP timeout per chat-completion call. 90s: measured on the OMEN, a cold
+# gemma3:4b load is ~20s and a warm structured call over a ~5k-token prompt is
+# 29-37s (worse under GPU contention from other Ollama clients on the 6GB card).
+# A 30s cap timed out even warm → retries → zero alerts. Lower this only if the
+# OMEN is dedicated to one small model and the prompt is trimmed.
+# timeout_seconds = 90
 
 [vision]
 # When enabled, a downscaled screenshot of the active window is attached to
 # every analysis call so the model reasons over the actual pixels (reels,
 # video, photos, charts, layout). Requires a vision-capable, NON-THINKING
-# model that follows `format:"json"` — set [llm] model accordingly.
+# model that honours structured-outputs (a JSON-Schema `format`) — set [llm]
+# model accordingly. gemma3:4b (the default) already does, for text and vision.
 #
 # Benchmarked on the OMEN RTX 2060 (Ollama 0.24.0):
 #   gemma3:4b   — RECOMMENDED. Clean PT-EU JSON, token-efficient vision,
 #                 fits 6GB alone (no swap), ~11s/call.
 #   llava:7b    — works but answers in English, heavier image tokens.
-#   qwen3-vl:4b — UNSUPPORTED: thinking model; `format:"json"` yields empty
+#   qwen3-vl:4b — UNSUPPORTED: thinking model; under a grammar it yields empty
 #                 output and reasoning blows past the token budget.
 # To use vision:  --vision-enabled true --llm-model gemma3:4b
 # Cost: vision-mode calls are slower (~11s) than the text-only path (~3s).

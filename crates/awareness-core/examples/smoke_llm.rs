@@ -1,6 +1,6 @@
 //! End-to-end smoke test against the configured local LLM.
 //!
-//! Runs one synthetic Teams-ping tick through `OpenAiClient::filter_call`
+//! Runs one synthetic Teams-ping tick through `LlmClient::filter_call`
 //! and prints latency, JSON validity, and the resulting `quick_message`
 //! so the desktop pipeline can be validated against OMEN/Ollama without
 //! booting the full CLI (which requires audio, OCR, and a11y).
@@ -9,7 +9,7 @@
 //!   cargo run -p awareness-core --example smoke_llm
 //!   AWARENESS_LLM_MODEL=aya:8b cargo run -p awareness-core --example smoke_llm
 
-use awareness_core::api::OpenAiClient;
+use awareness_core::api::LlmClient;
 use awareness_core::config::{
     Config, DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL, DEFAULT_LLM_TIMEOUT_SECONDS,
 };
@@ -21,7 +21,7 @@ fn cfg() -> Config {
         std::env::var("AWARENESS_LLM_BASE_URL").unwrap_or_else(|_| DEFAULT_LLM_BASE_URL.into());
     let model = std::env::var("AWARENESS_LLM_MODEL").unwrap_or_else(|_| DEFAULT_LLM_MODEL.into());
     Config {
-        openai_api_key: String::new(),
+        llm_api_key: String::new(),
         llm_base_url: base_url,
         llm_model: model,
         llm_timeout_seconds: std::env::var("AWARENESS_LLM_TIMEOUT_SECONDS")
@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
         cfg.llm_base_url, cfg.llm_model, cfg.llm_timeout_seconds
     );
 
-    let client = OpenAiClient::new(&cfg)?;
+    let client = LlmClient::new(&cfg)?;
 
     // SCENARIO=teams (default) | instagram_empty | instagram_match
     let scenario = std::env::var("SCENARIO").unwrap_or_else(|_| "teams".into());

@@ -6,7 +6,7 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
 /**
- * Persisted user settings. The OpenAI API key lives in
+ * Persisted user settings. The optional LLM bearer key lives in
  * EncryptedSharedPreferences (AES256 under a hardware-backed master
  * key when the device supports it). If the encrypted store cannot be
  * initialised — happens on some emulators / broken Keystores — we log
@@ -16,7 +16,7 @@ import androidx.security.crypto.MasterKey
 object Settings {
     private const val FILE_SECURE = "awareness-secure"
     private const val FILE_PLAIN = "awareness-settings"
-    private const val KEY_OPENAI = "openai_api_key"
+    private const val KEY_LLM_API = "llm_api_key"
     private const val KEY_BUDGET_USD = "budget_usd_daily"
     private const val KEY_TTS_ENABLED = "tts_enabled"
     private const val KEY_VISION_ENABLED = "vision_enabled"
@@ -51,11 +51,11 @@ object Settings {
     private fun plainPrefs(ctx: Context): SharedPreferences =
         ctx.getSharedPreferences(FILE_PLAIN, Context.MODE_PRIVATE)
 
-    fun openAiKey(ctx: Context): String =
-        securePrefs(ctx).getString(KEY_OPENAI, "") ?: ""
+    fun llmApiKey(ctx: Context): String =
+        securePrefs(ctx).getString(KEY_LLM_API, "") ?: ""
 
-    fun setOpenAiKey(ctx: Context, value: String) {
-        securePrefs(ctx).edit().putString(KEY_OPENAI, value.trim()).apply()
+    fun setLlmApiKey(ctx: Context, value: String) {
+        securePrefs(ctx).edit().putString(KEY_LLM_API, value.trim()).apply()
     }
 
     fun budgetUsdDaily(ctx: Context): Double =

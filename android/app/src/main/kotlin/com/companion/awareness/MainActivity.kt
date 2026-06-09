@@ -154,9 +154,9 @@ class MainActivity : ComponentActivity() {
         // service-side notification put EXTRA_AUTO_START=true on the
         // PendingIntent; if a stored key is already present we trigger
         // the same flow the Start button does, no extra clicks.
-        if (intent?.getBooleanExtra(AwarenessService.EXTRA_AUTO_START, false) == true &&
-            Settings.openAiKey(this).isNotBlank()
-        ) {
+        // No key gate: the backend is local Ollama (no auth), so a blank
+        // key must never block the resume flow.
+        if (intent?.getBooleanExtra(AwarenessService.EXTRA_AUTO_START, false) == true) {
             startCaptureFlow()
         }
 
@@ -164,7 +164,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val statusText by status
-                    var apiKey by remember { mutableStateOf(Settings.openAiKey(this@MainActivity)) }
+                    var apiKey by remember { mutableStateOf(Settings.llmApiKey(this@MainActivity)) }
                     var usageGranted by remember { mutableStateOf(FocusedApp.isGranted(this@MainActivity)) }
                     var a11yEnabled by remember { mutableStateOf(AwarenessAccessibilityService.isConnected()) }
                     var ttsEnabled by remember { mutableStateOf(Settings.ttsEnabled(this@MainActivity)) }
@@ -193,9 +193,9 @@ class MainActivity : ComponentActivity() {
                             value = apiKey,
                             onValueChange = {
                                 apiKey = it
-                                Settings.setOpenAiKey(this@MainActivity, it)
+                                Settings.setLlmApiKey(this@MainActivity, it)
                             },
-                            label = { Text("OpenAI API key") },
+                            label = { Text("LLM API key (vazio para Ollama)") },
                             visualTransformation = PasswordVisualTransformation(),
                             singleLine = true,
                         )
@@ -286,7 +286,7 @@ class MainActivity : ComponentActivity() {
                                     Settings.setBudgetUsdDaily(this@MainActivity, it)
                                 }
                             },
-                            label = { Text("Daily budget USD (local cap, not OpenAI)") },
+                            label = { Text("Daily budget USD (local cap)") },
                             singleLine = true,
                         )
                         Text(

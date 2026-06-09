@@ -14,7 +14,7 @@
 //!   1. Run `awareness_core::gate::evaluate` with persisted GateState.
 //!      If the rule set says Skip, return a no-alert response with the
 //!      reason in `alert_type` and no API cost.
-//!   2. If Send, call `OpenAiClient::filter_call` with the memory ring's
+//!   2. If Send, call `LlmClient::filter_call` with the memory ring's
 //!      prompt lines as context.
 //!   3. If the model decides `should_alert`, push a MemoryEntry so the
 //!      next tick has rolling history (avoids repeat alerts).
@@ -27,7 +27,7 @@
 //! instead. Shared state is locked with [`lock_state`], which recovers
 //! from poison so a single panic can't permanently brick the bridge.
 
-use awareness_core::api::OpenAiClient;
+use awareness_core::api::LlmClient;
 use awareness_core::budget::BudgetController;
 use awareness_core::config::Config;
 use awareness_core::gate::{self, GateAction, GateDecision, GateState};
@@ -62,7 +62,7 @@ const SCREEN_DUP_THRESHOLD: f32 = 0.85;
 const POST_API_DUP_THRESHOLD: f32 = 0.85;
 
 struct CoreState {
-    client: OpenAiClient,
+    client: LlmClient,
     config: Config,
     gate: GateState,
     memory: MemoryRing,
@@ -172,10 +172,10 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_configure<'local>
         // hardcode qwen3:8b, which silently overrode the config default and
         // pinned the device to the slow thinking model → calls timed out →
         // zero alerts. new(&config) makes config authoritative.
-        let client = match OpenAiClient::new(&config) {
+        let client = match LlmClient::new(&config) {
             Ok(c) => c,
             Err(e) => {
-                log::error!("configure: failed to build OpenAiClient: {e}");
+                log::error!("configure: failed to build LlmClient: {e}");
                 return;
             }
         };

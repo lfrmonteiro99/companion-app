@@ -7,7 +7,7 @@ use crate::config_file::{default_frustration_keywords, ConfigFile};
 
 pub const DEFAULT_VISION_MAX_IMAGE_PX: u32 = 1024;
 
-/// Default OpenAI-compatible endpoint: OMEN running Ollama, reachable
+/// Default chat endpoint: OMEN running Ollama, reachable
 /// over Tailscale. Kept as a constant so `for_android` and tests can
 /// share the same value as the desktop default.
 pub const DEFAULT_LLM_BASE_URL: &str = "http://100.68.73.123:11434/v1";
@@ -31,8 +31,9 @@ pub struct Config {
     /// Bearer token for the chat endpoint. Empty when targeting Ollama
     /// (no auth). Kept for the Android JNI bridge which still passes a
     /// key parameter from Kotlin.
-    pub openai_api_key: String,
-    /// Root URL of the OpenAI-compatible chat endpoint. Defaults to the
+    pub llm_api_key: String,
+    /// Root URL of the chat endpoint (Ollama; a trailing /v1 is tolerated).
+    /// Defaults to the
     /// OMEN Ollama server over Tailscale.
     pub llm_base_url: String,
     /// Model identifier (e.g. `qwen3:8b`).
@@ -123,7 +124,7 @@ pub struct RunArgs {
     /// Path to the AT-SPI sidecar. Script tries first; OCR is the fallback.
     #[arg(long)]
     pub a11y_script: Option<PathBuf>,
-    /// OpenAI-compatible chat endpoint root (e.g. `http://omen:11434/v1`).
+    /// Chat endpoint root (e.g. `http://omen:11434/v1`).
     /// Defaults to the OMEN Ollama server over Tailscale.
     #[arg(long)]
     pub llm_base_url: Option<String>,
@@ -156,10 +157,9 @@ impl Config {
         // Load .env if present (don't fail if missing)
         let _ = dotenvy::dotenv();
 
-        // Local LLM is the default — no key required. The env var is
-        // still honoured for users who choose to point at a paid
-        // OpenAI-compatible endpoint via --llm-base-url.
-        let openai_api_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
+        // Local LLM is the default — no key required. AWARENESS_LLM_API_KEY
+        // is honoured as a bearer token for endpoints that need auth.
+        let llm_api_key = std::env::var("AWARENESS_LLM_API_KEY").unwrap_or_default();
 
         // Load TOML config file (optional). Precedence lowest among non-defaults.
         let toml_cfg = {
@@ -315,7 +315,7 @@ impl Config {
             });
 
         let cfg = Self {
-            openai_api_key,
+            llm_api_key,
             llm_base_url,
             llm_model,
             llm_timeout_seconds,
@@ -434,9 +434,9 @@ impl Config {
     /// `output_dir`) that the Android pipeline never touches.
     ///
     /// Defaults for gate thresholds mirror the desktop production values.
-    pub fn for_android(openai_api_key: String, budget_usd_daily: f64) -> Self {
+    pub fn for_android(llm_api_key: String, budget_usd_daily: f64) -> Self {
         Self {
-            openai_api_key,
+            llm_api_key,
             llm_base_url: DEFAULT_LLM_BASE_URL.to_string(),
             llm_model: DEFAULT_LLM_MODEL.to_string(),
             llm_timeout_seconds: DEFAULT_LLM_TIMEOUT_SECONDS,
@@ -501,7 +501,7 @@ mod tests {
         let whisper_model_path = out.join("ggml-base.bin");
         std::fs::write(&whisper_model_path, b"dummy").unwrap();
         Config {
-            openai_api_key: String::new(),
+            llm_api_key: String::new(),
             llm_base_url: DEFAULT_LLM_BASE_URL.into(),
             llm_model: DEFAULT_LLM_MODEL.into(),
             llm_timeout_seconds: DEFAULT_LLM_TIMEOUT_SECONDS,
@@ -630,7 +630,7 @@ mod tests {
     #[test]
     fn for_android_carries_key_and_budget_and_uses_production_gate_defaults() {
         let cfg = Config::for_android("sk-x".into(), 1.25);
-        assert_eq!(cfg.openai_api_key, "sk-x");
+        assert_eq!(cfg.llm_api_key, "sk-x");
         assert_eq!(cfg.llm_base_url, DEFAULT_LLM_BASE_URL);
         assert_eq!(cfg.llm_model, DEFAULT_LLM_MODEL);
         assert!((cfg.budget_usd_daily - 1.25).abs() < f64::EPSILON);

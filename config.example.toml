@@ -16,7 +16,7 @@ periodic_check_minutes = 2
 text_new_words_threshold = 5
 text_change_cooldown_seconds = 6
 # Minimum seconds between voice_activity sends. Lower = more responsive
-# always-listen alerts, but higher OpenAI spend on a talkative day.
+# always-listen alerts, but more LLM calls on a talkative day.
 voice_cooldown_seconds = 5
 
 [runtime]
@@ -36,7 +36,7 @@ enabled = true
 # command = "spd-say"
 
 [llm]
-# OpenAI-compatible chat endpoint. Default targets the OMEN Ollama
+# Chat endpoint. Default targets the OMEN Ollama
 # server over Tailscale. Override with --llm-base-url or
 # AWARENESS_LLM_BASE_URL.
 # base_url = "http://100.68.73.123:11434/v1"

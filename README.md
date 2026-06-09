@@ -31,15 +31,15 @@ cargo run -- run
 
 ## Setup
 
-The desktop CLI talks to a local LLM over the Ollama OpenAI-compatible
+The desktop CLI talks to a local LLM over the Ollama
 endpoint. The default target is the OMEN box at
 `http://100.68.73.123:11434/v1` running `qwen3:8b` (clean PT-EU, ~3s
 warm). Override with `--llm-base-url` / `--llm-model` or the
 `AWARENESS_LLM_*` env vars; see `config.example.toml` for a TOML form.
 
 No API key is required for the default Ollama target. The
-`OPENAI_API_KEY` env var is still honoured if you point `--llm-base-url`
-at a paid OpenAI-compatible endpoint.
+`AWARENESS_LLM_API_KEY` env var is sent as a bearer token if you point
+`--llm-base-url` at an endpoint that requires auth.
 
 See [EVAL_PROTOCOL.md](./EVAL_PROTOCOL.md) for dogfooding metrics and go/no-go criteria.
 

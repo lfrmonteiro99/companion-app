@@ -61,7 +61,7 @@ pub struct TtsSection {
 #[derive(Debug, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct LlmSection {
-    /// OpenAI-compatible chat endpoint root, e.g.
+    /// Chat endpoint root (Ollama; /v1 tolerated), e.g.
     /// `http://100.68.73.123:11434/v1` for an Ollama server.
     pub base_url: Option<String>,
     /// Model identifier as known to the endpoint, e.g. `qwen3:8b`.

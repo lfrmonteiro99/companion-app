@@ -185,7 +185,7 @@ impl UserProfile {
     /// interests and anti-interests. Explicit (user-curated) interests,
     /// bio and app usage are untouched. Escape hatch for a poisoned
     /// profile: a "Mais disto" tap on a junk alert (e.g. the 2026-06
-    /// "API OpenAI ativa" narration loop) persists that text as an
+    /// "API externa ativa" narration loop) persists that text as an
     /// interest that then steers EVERY prompt, surviving app updates.
     pub fn clear_learned(&mut self) {
         self.interests.clear();
@@ -450,10 +450,10 @@ mod tests {
         // The deterministic check must catch it.
         let mut p = UserProfile::default();
         p.add_anti_interest(
-            "A API OpenAI continua ativada em background, consumindo bateria. \
+            "A API externa continua ativada em background, consumindo bateria. \
              Confirma se deseja continuar esta utilização.",
         );
-        let rephrased = "Utilizador: \"Like 10.9K Comment 227\" A API OpenAI continua \
+        let rephrased = "Utilizador: \"Like 10.9K Comment 227\" A API externa continua \
              ativada em background, consumindo bateria. Sugestão: Confirma se deseja \
              continuar esta utilização.";
         assert!(
@@ -466,7 +466,7 @@ mod tests {
     fn anti_interest_does_not_match_unrelated_alert() {
         let mut p = UserProfile::default();
         p.add_anti_interest(
-            "A API OpenAI continua ativada em background, consumindo bateria. \
+            "A API externa continua ativada em background, consumindo bateria. \
              Confirma se deseja continuar esta utilização.",
         );
         let unrelated = "João Silva (há 9 min): 'PR #142 pronto? quero fazer merge \

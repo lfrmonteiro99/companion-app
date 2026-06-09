@@ -87,44 +87,104 @@ struct FilterResponseRaw {
     suggested_reply: Option<String>,
     #[serde(default)]
     suggested_action: Option<String>,
+    /// Nested null-vs-object shape the model emits (see
+    /// `filter_response_schema`); flattened into the public
+    /// `FilterResponse.content_niche`/`content_theme` so the FFI/Kotlin
+    /// surface is unchanged. The legacy flat fields are still accepted
+    /// for old persisted JSON.
+    #[serde(default)]
+    content_idea: Option<ContentIdeaRaw>,
     #[serde(default)]
     content_niche: Option<String>,
     #[serde(default)]
     content_theme: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ContentIdeaRaw {
+    niche: String,
+    theme: String,
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// JSON Schema for the model's structured output (Ollama's `format` field).
 ///
-/// Grammar-constrains generation to the exact `FilterResponseRaw` shape: the
-/// five required fields must be present with the correct names/types, `urgency`
-/// is a closed enum, and the four action/content fields are optional and
-/// nullable. `alert_type` is a free string by design — the Android consumer
-/// treats it as one (`optString` + prefix checks), so enum-locking it here
-/// could forbid a legitimate value. Required-field locking is what fixes the
-/// silent-drop bug: gemma3:4b under plain `format:"json"` emitted `alert_message`
-/// instead of `should_alert`, failing serde and dropping the alert.
+/// Grammar-constrains generation to the exact `FilterResponseRaw` shape:
+/// ALL nine fields are required — the four action/content fields stay
+/// nullable but must be EMITTED. With them optional, gemma3:4b took the
+/// grammar's shortest path and omitted the keys entirely (measured:
+/// `content_niche=None` on a textbook pt_history seed, `suggested_reply`
+/// populated only intermittently); required+nullable forces an explicit
+/// value-or-null decision per field. `urgency` is a closed enum.
+/// `alert_type` is a free string by design — the Android consumer treats it
+/// as one (`optString` + prefix checks), so enum-locking it here could
+/// forbid a legitimate value. Required-field locking is also what fixes the
+/// silent-drop bug: gemma3:4b under plain `format:"json"` emitted
+/// `alert_message` instead of `should_alert`, failing serde and dropping
+/// the alert.
 fn filter_response_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
             "should_alert": { "type": "boolean" },
-            "alert_type": { "type": "string" },
+            // Closed set mirroring the prompt's declared schema. Only
+            // constrains MODEL output — core-synthesized values
+            // ("skipped:*", "budget_exceeded", "duplicate",
+            // "anti_interest", "error") never pass through the grammar.
+            // Measured need: without it gemma3:4b labelled textbook
+            // content-ideas as "focus", so the Gerar action never fired.
+            "alert_type": {
+                "type": "string",
+                "enum": [
+                    "focus", "time_spent", "emotional", "preparation",
+                    "voice_reply", "content_idea", "none"
+                ]
+            },
             "urgency": { "type": "string", "enum": ["low", "medium", "high"] },
             "needs_deep_analysis": { "type": "boolean" },
             "quick_message": { "type": "string" },
             "suggested_reply": { "type": ["string", "null"] },
             "suggested_action": { "type": ["string", "null"] },
-            "content_niche": { "type": ["string", "null"] },
-            "content_theme": { "type": ["string", "null"] }
+            // ONE null-vs-object decision instead of two independent
+            // nullable strings. Iteration history on gemma3:4b: optional
+            // fields → always omitted; required+nullable → invented
+            // niches ("lifestyle"); +enum → force-picked
+            // "portugal_history" for French/lifestyle content (small
+            // models under grammar pressure avoid null on independent
+            // fields). A single anyOf[null, object] makes "no idea" one
+            // tiny completion, and inside the object the niche enum
+            // still makes invention impossible.
+            "content_idea": {
+                "anyOf": [
+                    { "type": "null" },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "niche": {
+                                "type": "string",
+                                "enum": [
+                                    "portugal_history",
+                                    "portugal_alt_history",
+                                    "ghost_stories_real"
+                                ]
+                            },
+                            "theme": { "type": "string" }
+                        },
+                        "required": ["niche", "theme"]
+                    }
+                ]
+            }
         },
         "required": [
             "should_alert",
             "alert_type",
             "urgency",
             "needs_deep_analysis",
-            "quick_message"
+            "quick_message",
+            "suggested_reply",
+            "suggested_action",
+            "content_idea"
         ]
     })
 }
@@ -368,18 +428,19 @@ CANAIS DE CONTEÚDO (gatilho extra)
 O utilizador tem 2 canais de Instagram onde gera vídeos a partir de história portuguesa. Quando o ecrã mostra material que serve DIRECTAMENTE de semente para um deles, PROPÕE uma ideia de conteúdo. Atenção: propor um vídeo a partir do que ele está a ler É o valor — NÃO é narrar o ecrã. Por isso, perante um facto/figura/evento histórico português claro, NÃO fiques calado por "estar só a descrever": propõe.
 
 ROTEAMENTO (decide o canal por esta ordem, pára no primeiro que bate):
-1. Há QUALQUER elemento sombrio/occulto — fantasma, assombração, cripta/mosteiro/lugar abandonado, relíquia/maldição, Inquisição, paranormal, morte misteriosa? → SEMPRE CANAL 2, content_niche = "ghost_stories_real". MESMO que também seja história portuguesa (o sombrio ganha sempre ao histórico-normal).
-2. Senão, é história/cultura/figura/evento/local PORTUGUÊS (não-sombrio)? → CANAL 1, content_niche = "portugal_history" (ou "portugal_alt_history" se for claramente um cenário "e se" alternativo).
-3. Senão (não-português, ou sem ângulo concreto) → não proponhas: content_niche e content_theme = null.
+1. Há QUALQUER elemento sombrio/occulto — fantasma, assombração, cripta/mosteiro/lugar abandonado, relíquia/maldição, Inquisição, paranormal, morte misteriosa? → SEMPRE CANAL 2, niche "ghost_stories_real". MESMO que também seja história portuguesa (o sombrio ganha sempre ao histórico-normal).
+2. Senão, é história/cultura/figura/evento/local PORTUGUÊS (não-sombrio)? → CANAL 1, niche "portugal_history" (ou "portugal_alt_history" se for claramente um cenário "e se" alternativo).
+3. Senão (não-português, ou sem ângulo concreto) → não proponhas: content_idea = null.
 
-Quando disparas: alert_type = "content_idea", urgency = "low", content_niche = a key exacta, content_theme = tópico-semente conciso em PT-EU (uma frase), quick_message = "Isto dava um vídeo: <ângulo concreto>".
+Quando disparas: alert_type = "content_idea", urgency = "low", content_idea = {"niche": a key exacta, "theme": tópico-semente conciso em PT-EU (uma frase)}, quick_message = "Isto dava um vídeo: <ângulo concreto>".
 
 EXEMPLOS:
-- "Batalha de Aljubarrota (1385), D. João I derrota Castela" → CANAL 1. content_niche="portugal_history", content_theme="A Batalha de Aljubarrota e como garantiu a independência de Portugal", quick_message="Isto dava um vídeo: Aljubarrota, a batalha que salvou a independência de Portugal em 1385."
-- "Convento abandonado, relatos de aparições de monges" → CANAL 2 (tem assombração). content_niche="ghost_stories_real".
-- "The French Revolution, 1789" → null (não é português, sem elemento sombrio).
+- "Batalha de Aljubarrota (1385), D. João I derrota Castela" → CANAL 1. content_idea={"niche":"portugal_history","theme":"A Batalha de Aljubarrota e como garantiu a independência de Portugal"}, quick_message="Isto dava um vídeo: Aljubarrota, a batalha que salvou a independência de Portugal em 1385."
+- "Convento abandonado, relatos de aparições de monges" → CANAL 2 (tem assombração). content_idea={"niche":"ghost_stories_real","theme":"O convento abandonado e os relatos de aparições de monges"}.
+- "The French Revolution, 1789" → content_idea=null (não é português, sem elemento sombrio).
+- Reel de rotina matinal / lifestyle / humor → content_idea=null E fica calado.
 
-Não forces: se não é português E não é claramente sombrio, content_niche=null. Em scroll de entretenimento sem matéria histórica/sombria → fica calado.
+Não forces: se não é português E não é claramente sombrio, content_idea=null — NUNCA encaixes conteúdo estrangeiro ou genérico num dos nichos. Em scroll de entretenimento sem matéria histórica/sombria → fica calado.
 
 URGENCY:
 - "high" — prazo imediato (reunião a começar, crash bloqueante, deadline a estourar).
@@ -395,9 +456,10 @@ Responde SEMPRE JSON válido neste schema exacto:
   "quick_message": string,
   "suggested_reply": string | null,
   "suggested_action": string | null,
-  "content_niche": string | null,
-  "content_theme": string | null
-}"#;
+  "content_idea": { "niche": "portugal_history" | "portugal_alt_history" | "ghost_stories_real", "theme": string } | null
+}
+
+As 3 chaves anuláveis (suggested_reply, suggested_action, content_idea) são SEMPRE emitidas — escreve null quando não se aplicam, e null é a resposta CERTA na esmagadora maioria dos ticks. content_idea só deixa de ser null quando o ecrã é semente DIRECTA para um dos 2 canais do utilizador (ver CANAIS DE CONTEÚDO): história/cultura PORTUGUESA ou tema sombrio/assombrado. Revolução Francesa, rotinas matinais, lifestyle, tech → content_idea=null, sem excepção. Preencher content_idea NÃO é, por si, motivo para alertar: should_alert rege-se exclusivamente pela REGRA DE OURO. FORMATO OBRIGATÓRIO: sempre que content_idea NÃO é null, alert_type="content_idea" E o quick_message começa exactamente por "Isto dava um vídeo:" — sem estas duas marcas a proposta é inválida."#;
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
@@ -603,6 +665,12 @@ impl OpenAiClient {
                 }
             };
 
+            // Flatten the nested content_idea (current schema) with the
+            // legacy flat fields as fallback for old persisted JSON.
+            let (content_niche, content_theme) = match raw.content_idea {
+                Some(idea) => (Some(idea.niche), Some(idea.theme)),
+                None => (raw.content_niche, raw.content_theme),
+            };
             return Ok(FilterResponse {
                 should_alert: raw.should_alert,
                 alert_type: raw.alert_type,
@@ -611,8 +679,8 @@ impl OpenAiClient {
                 quick_message: raw.quick_message,
                 suggested_reply: raw.suggested_reply,
                 suggested_action: raw.suggested_action,
-                content_niche: raw.content_niche,
-                content_theme: raw.content_theme,
+                content_niche,
+                content_theme,
                 tokens_in,
                 tokens_out,
                 cost_usd,
@@ -775,13 +843,22 @@ mod tests {
             SYSTEM_PROMPT.contains("CANAIS DE CONTEÚDO"),
             "SYSTEM_PROMPT must contain the content channels section"
         );
+        // Schema shape changed 2026-06-09: the model now emits ONE
+        // nullable object — content_idea: {niche, theme} | null — instead
+        // of two independent nullable strings (gemma3:4b avoided null on
+        // independent fields and junk-filled them). The prompt must teach
+        // the nested keys and the mandatory proposal format.
         assert!(
-            SYSTEM_PROMPT.contains("content_niche"),
-            "SYSTEM_PROMPT must reference content_niche in schema"
+            SYSTEM_PROMPT.contains("\"niche\""),
+            "SYSTEM_PROMPT must reference the nested niche key in schema"
         );
         assert!(
-            SYSTEM_PROMPT.contains("content_theme"),
-            "SYSTEM_PROMPT must reference content_theme in schema"
+            SYSTEM_PROMPT.contains("\"theme\""),
+            "SYSTEM_PROMPT must reference the nested theme key in schema"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("Isto dava um vídeo:"),
+            "SYSTEM_PROMPT must mandate the canonical proposal phrase (the Kotlin Gerar gate keys on it)"
         );
         assert!(
             SYSTEM_PROMPT.contains("content_idea"),

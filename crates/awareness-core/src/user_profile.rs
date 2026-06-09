@@ -26,6 +26,15 @@ const TOP_APPS_IN_PROMPT: usize = 6;
 const MAX_EXPLICIT_INTERESTS: usize = 80;
 const MIN_PATTERN_LEN: usize = 3;
 const TOP_K_FILTERED: usize = 12;
+/// Trigram-Jaccard similarity above which a proposed alert message is
+/// considered "the same theme" as a stored anti-interest and suppressed.
+/// Deliberately looser than the post-API duplicate threshold (0.85 =
+/// "same alert, re-worded") because anti-interest matching wants "same
+/// TOPIC, new instance": the model re-phrases and prepends a fresh
+/// screen quote, which dilutes similarity. 0.55 is calibrated by the
+/// unit tests below against the real 2026-06-01 battery-loop strings
+/// (variants of the same theme score ≳0.6; unrelated alerts ≲0.2).
+const ANTI_INTEREST_SIM_THRESHOLD: f32 = 0.55;
 /// Hard cap on distinct apps tracked in `app_usage`. Without it the map
 /// (and the JSON written every save) grows unbounded over long sessions;
 /// only the top-N ever surface in the prompt anyway.
@@ -170,6 +179,32 @@ impl UserProfile {
 
     fn touch(&mut self) {
         self.updated_at = chrono::Utc::now().timestamp();
+    }
+
+    /// Deterministic "Não interessa" enforcement: returns the stored
+    /// anti-interest most similar to `text` when that similarity crosses
+    /// [`ANTI_INTEREST_SIM_THRESHOLD`], else `None`. Callers suppress the
+    /// alert on `Some`.
+    ///
+    /// Anti-interests are snippets of previously alerted messages (the
+    /// notification's "Não interessa" action stores `body.take(160)`), so
+    /// a future alert on the same theme by the same model tends to share
+    /// long word runs — trigram Jaccard catches that even when a dynamic
+    /// prefix (screen quote) differs. Until now anti-interests only
+    /// appeared as prompt text, and the small model ignores prompt-only
+    /// rules (see this project's golden-rule/anti-repetition history);
+    /// this makes the rating actually bite.
+    pub fn matches_anti_interest(&self, text: &str) -> Option<String> {
+        let t = normalise(text);
+        if t.chars().count() < MIN_PATTERN_LEN {
+            return None;
+        }
+        self.anti_interests
+            .iter()
+            .find(|anti| {
+                crate::dedup::TextDedup::jaccard_trigrams(&t, anti) >= ANTI_INTEREST_SIM_THRESHOLD
+            })
+            .cloned()
     }
 
     // ── Explicit (curated) interests ─────────────────────────────
@@ -393,6 +428,54 @@ mod tests {
         p.add_interest("memes");
         assert!(p.interests.contains(&"memes".to_string()));
         assert!(!p.anti_interests.contains(&"memes".to_string()));
+    }
+
+    #[test]
+    fn anti_interest_matches_same_theme_with_different_prefix() {
+        // Real strings from the 2026-06-01 battery-narration loop: the
+        // user taps "Não interessa" on one of these, and the next tick
+        // produces the same theme behind a different screen-quote prefix.
+        // The deterministic check must catch it.
+        let mut p = UserProfile::default();
+        p.add_anti_interest(
+            "A API OpenAI continua ativada em background, consumindo bateria. \
+             Confirma se deseja continuar esta utilização.",
+        );
+        let rephrased = "Utilizador: \"Like 10.9K Comment 227\" A API OpenAI continua \
+             ativada em background, consumindo bateria. Sugestão: Confirma se deseja \
+             continuar esta utilização.";
+        assert!(
+            p.matches_anti_interest(rephrased).is_some(),
+            "same theme behind a new prefix must match"
+        );
+    }
+
+    #[test]
+    fn anti_interest_does_not_match_unrelated_alert() {
+        let mut p = UserProfile::default();
+        p.add_anti_interest(
+            "A API OpenAI continua ativada em background, consumindo bateria. \
+             Confirma se deseja continuar esta utilização.",
+        );
+        let unrelated = "João Silva (há 9 min): 'PR #142 pronto? quero fazer merge \
+             antes da release das 18h' — Confirma se o review está completo.";
+        assert!(
+            p.matches_anti_interest(unrelated).is_none(),
+            "an unrelated alert must NOT be suppressed"
+        );
+    }
+
+    #[test]
+    fn anti_interest_cleared_by_later_positive_rating() {
+        // "Mais disto" after "Não interessa" on the same topic removes the
+        // anti entry (add_interest already does this) — the deterministic
+        // gate must stop firing.
+        let mut p = UserProfile::default();
+        let msg = "Resumo diário dos mercados: SP500 sobe 1.2%, taxas estáveis.";
+        p.add_anti_interest(msg);
+        assert!(p.matches_anti_interest(msg).is_some());
+        p.add_interest(msg);
+        assert!(p.matches_anti_interest(msg).is_none());
     }
 
     #[test]

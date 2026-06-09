@@ -220,7 +220,7 @@ mod tests {
 
     fn dummy_cfg() -> Arc<Config> {
         Arc::new(Config {
-            openai_api_key: String::new(),
+            llm_api_key: String::new(),
             llm_base_url: crate::config::DEFAULT_LLM_BASE_URL.into(),
             llm_model: crate::config::DEFAULT_LLM_MODEL.into(),
             llm_timeout_seconds: crate::config::DEFAULT_LLM_TIMEOUT_SECONDS,

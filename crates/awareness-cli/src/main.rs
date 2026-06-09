@@ -716,7 +716,7 @@ async fn run(args: RunArgs) -> Result<()> {
     // Eval loop (terminal alerts + ratings + optional TTS)
     let _eval = spawn_eval_loop(alert_rx, ratings_path, tts_config).await?;
 
-    // Analysis backend (text-only; local LLM via Ollama OpenAI-compat).
+    // Analysis backend (text-only; local LLM via Ollama).
     let backend = Backend::new(cfg.backend, &cfg)?;
     tracing::info!("analysis backend: {}", backend.label());
 

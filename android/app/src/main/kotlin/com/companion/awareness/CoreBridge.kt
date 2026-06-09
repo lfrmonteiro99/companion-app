@@ -16,7 +16,7 @@ object CoreBridge {
     external fun init()
 
     /**
-     * Store the OpenAI API key + daily USD budget + a writable directory
+     * Store the (optional) LLM bearer key + daily USD budget + a writable directory
      * (the app's internal `filesDir`) where the core persists
      * `budget.json`. Must be called before [analyze]. If the process
      * dies, call again on restart — the key itself should live in
@@ -27,7 +27,7 @@ object CoreBridge {
     /**
      * Submit a [com.companion.awareness.types.ContextEvent]-shaped JSON
      * and receive a [com.companion.awareness.types.FilterResponse]-shaped
-     * JSON back. Runs the OpenAI filter call inside the core's tokio
+     * JSON back. Runs the LLM filter call inside the core's tokio
      * runtime; blocks the caller thread, so invoke from a background
      * coroutine.
      */

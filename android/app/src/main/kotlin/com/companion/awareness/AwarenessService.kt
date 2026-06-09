@@ -132,11 +132,10 @@ class AwarenessService : Service() {
     }
 
     private fun configureCoreFromStoredKey() {
-        val key = Settings.openAiKey(this)
-        if (key.isBlank()) {
-            AppLog.w(TAG, "no OpenAI key stored; analyze calls will fail")
-            return
-        }
+        // Blank key is VALID: the backend is local Ollama (no auth). The
+        // old key-required early-return left the core unconfigured — and
+        // therefore the whole app dead — for keyless setups.
+        val key = Settings.llmApiKey(this)
         CoreBridge.configure(key, Settings.budgetUsdDaily(this), filesDir.absolutePath)
         // Sync the stored bio into the Rust profile so every analyze
         // call includes it. Interests accumulated via rating actions

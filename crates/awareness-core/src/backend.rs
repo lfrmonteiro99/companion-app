@@ -1,12 +1,12 @@
 use anyhow::Result;
 
-use crate::api::OpenAiClient;
+use crate::api::LlmClient;
 use crate::config::Config;
 use crate::types::{ContextEvent, FilterResponse};
 
 pub enum Backend {
     Text {
-        client: OpenAiClient,
+        client: LlmClient,
         wants_image: bool,
     },
 }
@@ -15,7 +15,7 @@ impl Backend {
     pub fn new(kind: BackendKind, cfg: &Config) -> Result<Self> {
         Ok(match kind {
             BackendKind::Text => Backend::Text {
-                client: OpenAiClient::new(cfg)?,
+                client: LlmClient::new(cfg)?,
                 wants_image: cfg.vision_enabled,
             },
         })

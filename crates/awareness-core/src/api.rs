@@ -8,7 +8,7 @@ use std::time::Duration;
 // ── Internal request / response structs ──────────────────────────────────────
 //
 // Targets Ollama's NATIVE `/api/chat` (not the `/v1/chat/completions`
-// OpenAI-compat shim). The shim silently ignores `options.num_ctx`,
+// /v1 compat shim). The shim silently ignores `options.num_ctx`,
 // which lets Ollama default to `num_ctx=8192` and forces ~14% of the
 // 8B Q4 layers onto CPU on a 6 GB RTX 2060 — the smoke test caught this
 // (qwen3:8b loaded at `14%/86% CPU/GPU 8192` on OMEN). The jarvis
@@ -37,7 +37,7 @@ struct ChatRequest {
 #[derive(Serialize)]
 struct ChatOptions {
     temperature: f32,
-    /// Max generated tokens (Ollama-native name; OpenAI calls it
+    /// Max generated tokens (Ollama-native name; other APIs call it
     /// `max_tokens`). Kept conservative — alerts are 20-30 words.
     num_predict: u32,
     /// Context window the model is loaded with. Must be set explicitly
@@ -463,22 +463,21 @@ As 3 chaves anuláveis (suggested_reply, suggested_action, content_idea) são SE
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
-/// Local-LLM client over the Ollama OpenAI-compatible chat endpoint.
+/// Local-LLM client over the Ollama chat endpoint.
 ///
-/// Type name kept as `OpenAiClient` so the Android JNI bridge in
-/// `android/core-rs` keeps linking without changes. The struct now
-/// targets Ollama at `cfg.llm_base_url` (default OMEN over Tailscale,
-/// `http://100.68.73.123:11434/v1`) and sends no `Authorization` header
-/// when `api_key` is empty.
+/// Targets Ollama at `cfg.llm_base_url` (default OMEN over Tailscale,
+/// `http://100.68.73.123:11434/v1`); sends no `Authorization` header
+/// when `api_key` is empty. (Renamed 2026-06-09 —
+/// the backend has been local Ollama since PR #11.)
 #[derive(Clone)]
-pub struct OpenAiClient {
+pub struct LlmClient {
     http: Client,
     base_url: String,
     model: String,
     api_key: String,
 }
 
-impl OpenAiClient {
+impl LlmClient {
     pub fn new(cfg: &Config) -> Result<Self> {
         warn_if_insecure_endpoint(&cfg.llm_base_url);
         let http = Client::builder()
@@ -489,11 +488,11 @@ impl OpenAiClient {
             http,
             base_url: cfg.llm_base_url.clone(),
             model: cfg.llm_model.clone(),
-            api_key: cfg.openai_api_key.clone(),
+            api_key: cfg.llm_api_key.clone(),
         })
     }
 
-    /// Build an `OpenAiClient` from an API key only. Retained as a fallback
+    /// Build an `LlmClient` from an API key only. Retained as a fallback
     /// constructor; defaults are sourced from the shared `DEFAULT_*` constants
     /// so this can never silently diverge from `Config` again. (It previously
     /// hardcoded `qwen3:8b` independently of `DEFAULT_LLM_MODEL`, so changing
@@ -935,7 +934,7 @@ mod tests {
     #[test]
     fn with_api_key_builds_client_without_full_config() {
         // Android frontend path: no Config struct, just an API key.
-        let client = OpenAiClient::with_api_key("sk-dummy".into()).expect("client must build");
+        let client = LlmClient::with_api_key("sk-dummy".into()).expect("client must build");
         assert_eq!(client.api_key, "sk-dummy");
     }
 

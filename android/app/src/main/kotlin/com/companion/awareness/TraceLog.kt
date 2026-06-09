@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Per-tick pipeline trace. Answers "what did the service do this cycle?"
  * in plain language: captured X chars from app Y, gate said Send/Skip
- * because Z, OpenAI charged $N and returned alert=true/false, and the
+ * because Z, the LLM call cost $N and returned alert=true/false, and the
  * notification was delivered or suppressed.
  *
  * Backed by JSONL in `filesDir/trace_log.jsonl`. Capped at ~400 KiB so it
@@ -63,10 +63,10 @@ object TraceLog {
     }
 
     fun gateSkip(tickId: Long, reason: String) =
-        write(tickId, Stage.GATE_SKIP, "gate=Skip reason=$reason · NOT sending to OpenAI")
+        write(tickId, Stage.GATE_SKIP, "gate=Skip reason=$reason · NOT sending to the LLM")
 
     fun gateSend(tickId: Long, reason: String) =
-        write(tickId, Stage.GATE_SEND, "gate=Send reason=$reason · SENDING to OpenAI")
+        write(tickId, Stage.GATE_SEND, "gate=Send reason=$reason · SENDING to the LLM")
 
     fun apiResponse(tickId: Long, alertType: String, shouldAlert: Boolean, costUsd: Double, message: String) =
         write(
@@ -80,7 +80,7 @@ object TraceLog {
             tickId,
             Stage.BUDGET,
             "local daily cap \$${"%.2f".format(limitUsd)} reached · skipping API call " +
-                "(app setting, not an OpenAI limit)",
+                "(app setting, not a provider limit)",
         )
 
     fun notificationPosted(tickId: Long, type: String, urgency: String) =

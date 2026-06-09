@@ -1,6 +1,9 @@
 package com.companion.awareness
 
 import android.os.Bundle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
@@ -38,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Modifier
@@ -64,16 +68,32 @@ class ProfileActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    var bio by remember { mutableStateOf(Settings.userBio(this@ProfileActivity)) }
-                    val interests = remember {
-                        mutableStateListOf<String>().apply {
-                            addAll(Settings.explicitInterests(this@ProfileActivity))
-                        }
-                    }
+                    // ALL Settings/CoreBridge access happens off the main
+                    // thread: EncryptedSharedPreferences pays a Keystore
+                    // init (100ms+) and the JNI getters take the core
+                    // state lock shared with the tick loop — doing either
+                    // during composition froze this screen (ANR) on
+                    // device, which mattered when the user needed it to
+                    // inspect a poisoned profile.
+                    val scope = rememberCoroutineScope()
+                    var bio by remember { mutableStateOf("") }
+                    val interests = remember { mutableStateListOf<String>() }
                     var summary by remember { mutableStateOf("{}") }
 
                     LaunchedEffect(Unit) {
-                        summary = runCatching { CoreBridge.getProfileText() }.getOrDefault("{}")
+                        val (loadedBio, loadedInterests, loadedSummary) =
+                            withContext(Dispatchers.IO) {
+                                Triple(
+                                    Settings.userBio(this@ProfileActivity),
+                                    Settings.explicitInterests(this@ProfileActivity),
+                                    runCatching { CoreBridge.getProfileText() }
+                                        .getOrDefault("{}"),
+                                )
+                            }
+                        bio = loadedBio
+                        interests.clear()
+                        interests.addAll(loadedInterests)
+                        summary = loadedSummary
                     }
 
                     Column(
@@ -99,9 +119,15 @@ class ProfileActivity : ComponentActivity() {
                             minLines = 5,
                         )
                         Button(onClick = {
-                            Settings.setUserBio(this@ProfileActivity, bio)
-                            runCatching { CoreBridge.setBio(bio) }
-                            summary = runCatching { CoreBridge.getProfileText() }.getOrDefault("{}")
+                            scope.launch {
+                                val refreshed = withContext(Dispatchers.IO) {
+                                    Settings.setUserBio(this@ProfileActivity, bio)
+                                    runCatching { CoreBridge.setBio(bio) }
+                                    runCatching { CoreBridge.getProfileText() }
+                                        .getOrDefault("{}")
+                                }
+                                summary = refreshed
+                            }
                         }) {
                             Text("Guardar bio")
                         }
@@ -112,12 +138,15 @@ class ProfileActivity : ComponentActivity() {
                         InterestsEditor(
                             interests = interests,
                             onChanged = {
-                                Settings.setExplicitInterests(
-                                    this@ProfileActivity,
-                                    interests.toList(),
-                                )
-                                runCatching {
-                                    CoreBridge.setExplicitInterests(interests.toTypedArray())
+                                val snapshot = interests.toList()
+                                scope.launch(Dispatchers.IO) {
+                                    Settings.setExplicitInterests(
+                                        this@ProfileActivity,
+                                        snapshot,
+                                    )
+                                    runCatching {
+                                        CoreBridge.setExplicitInterests(snapshot.toTypedArray())
+                                    }
                                 }
                             },
                         )
@@ -130,6 +159,25 @@ class ProfileActivity : ComponentActivity() {
                             style = MaterialTheme.typography.titleSmall,
                         )
                         LearnedSummary(summary)
+                        Button(onClick = {
+                            scope.launch {
+                                val refreshed = withContext(Dispatchers.IO) {
+                                    runCatching { CoreBridge.clearLearnedInterests() }
+                                    runCatching { CoreBridge.getProfileText() }
+                                        .getOrDefault("{}")
+                                }
+                                summary = refreshed
+                            }
+                        }) {
+                            Text("Limpar aprendidos")
+                        }
+                        Text(
+                            "Apaga interesses e anti-interesses acumulados pelos botões " +
+                                "das notificações (a bio e os interesses explícitos ficam). " +
+                                "Usa isto se um alerta lixo foi marcado 'Mais disto' e o tema " +
+                                "passou a aparecer em todos os alertas.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                 }
             }

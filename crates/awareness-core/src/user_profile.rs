@@ -181,6 +181,18 @@ impl UserProfile {
         self.updated_at = chrono::Utc::now().timestamp();
     }
 
+    /// Wipe everything the rating buttons accumulated — both learned
+    /// interests and anti-interests. Explicit (user-curated) interests,
+    /// bio and app usage are untouched. Escape hatch for a poisoned
+    /// profile: a "Mais disto" tap on a junk alert (e.g. the 2026-06
+    /// "API OpenAI ativa" narration loop) persists that text as an
+    /// interest that then steers EVERY prompt, surviving app updates.
+    pub fn clear_learned(&mut self) {
+        self.interests.clear();
+        self.anti_interests.clear();
+        self.touch();
+    }
+
     /// Deterministic "Não interessa" enforcement: returns the stored
     /// anti-interest most similar to `text` when that similarity crosses
     /// [`ANTI_INTEREST_SIM_THRESHOLD`], else `None`. Callers suppress the

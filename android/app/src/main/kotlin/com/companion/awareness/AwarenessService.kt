@@ -294,6 +294,26 @@ class AwarenessService : Service() {
         // missing keys so we normalise to null to keep downstream logic clean.
         val suggestedReply = obj.optString("suggested_reply", "").takeIf { it.isNotBlank() }
         val suggestedAction = obj.optString("suggested_action", "").takeIf { it.isNotBlank() }
+        // Content-idea seed (Phase B): when the model proposes a video for
+        // one of the user's channels, theme+niche become the "Gerar" action.
+        // CORROBORATION GATE: gemma3:4b under the structured-outputs
+        // grammar avoids null and fills niche/theme on nearly every
+        // alerting tick (measured: "portugal_history" for the French
+        // Revolution and for lo-fi morning reels, with rationalised
+        // themes). Fields alone are therefore NOT a proposal signal.
+        // Require the model to also signal intent — the content_idea
+        // label or the canonical phrase the prompt mandates — before
+        // showing the button. Real seeds produce both; junk-fill behind
+        // a normal alert produces neither.
+        val contentNiche = obj.optString("content_niche", "").takeIf { it.isNotBlank() }
+        val contentTheme = obj.optString("content_theme", "").takeIf { it.isNotBlank() }
+        val proposesIdea = alertType == "content_idea" ||
+            message.contains("dava um vídeo", ignoreCase = true)
+        val generateSeed = if (contentNiche != null && contentTheme != null && proposesIdea) {
+            "$contentTheme  #$contentNiche"
+        } else {
+            null
+        }
 
         // Surface the interests that were actually fed to the model so
         // the user can see the filter at work (and debug false misses).
@@ -315,7 +335,7 @@ class AwarenessService : Service() {
             }
         }
 
-        handleResponse(tickId, responseJson, alertType, shouldAlert, message, urgency, suggestedReply, suggestedAction)
+        handleResponse(tickId, responseJson, alertType, shouldAlert, message, urgency, suggestedReply, suggestedAction, generateSeed)
     }
 
     private fun handleResponse(
@@ -327,6 +347,7 @@ class AwarenessService : Service() {
         urgency: String,
         suggestedReply: String? = null,
         suggestedAction: String? = null,
+        generateSeed: String? = null,
     ) {
         if (!shouldAlert) {
             TraceLog.notificationSuppressed(tickId, "model said should_alert=false")
@@ -347,7 +368,7 @@ class AwarenessService : Service() {
             return
         }
         val title = alertType.replaceFirstChar { it.uppercase() }
-        postAlert(title, body, urgency, suggestedReply, suggestedAction)
+        postAlert(title, body, urgency, suggestedReply, suggestedAction, generateSeed)
         TraceLog.notificationPosted(tickId, alertType, urgency)
 
         AlertLog.append(
@@ -396,6 +417,7 @@ class AwarenessService : Service() {
         urgency: String,
         suggestedReply: String? = null,
         suggestedAction: String? = null,
+        generateSeed: String? = null,
     ) {
         val priority = when (urgency) {
             "high" -> NotificationCompat.PRIORITY_HIGH
@@ -453,7 +475,21 @@ class AwarenessService : Service() {
             .putExtra(MuteReceiver.EXTRA_NOTIF_ID, notifId)
         val mutePi = PendingIntent.getBroadcast(this, notifId * 10 + 3, muteIntent, piFlags)
 
+        // "Gerar" (content_idea only) — Phase B v1: copies the
+        // theme+niche seed to the clipboard via CopyReceiver so the user
+        // can paste it straight into the generator. A direct
+        // phone→generator transport doesn't exist yet; clipboard is the
+        // honest minimal version of the planned button.
+        val generatePi = generateSeed?.let { seed ->
+            val genIntent = Intent(this, CopyReceiver::class.java)
+                .setAction(CopyReceiver.ACTION_COPY)
+                .putExtra(CopyReceiver.EXTRA_TEXT, seed)
+                .putExtra(CopyReceiver.EXTRA_NOTIF_ID, notifId)
+            PendingIntent.getBroadcast(this, notifId * 10 + 4, genIntent, piFlags)
+        }
+
         // Action budget: Android shows ~3 visible actions. Priority:
+        //   content_idea (generateSeed) → [Gerar, Silenciar 1h, 👍]
         //   with suggestedReply  → [Copiar resposta, Silenciar 1h, 👍]
         //   without suggestedReply → [Silenciar 1h, 👍, 👎]
         val builder = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
@@ -465,7 +501,12 @@ class AwarenessService : Service() {
             .setAutoCancel(true)
             .setContentIntent(tap)
 
-        if (copyPi != null) {
+        if (generatePi != null) {
+            builder.addAction(android.R.drawable.ic_menu_send, "Gerar", generatePi)
+            builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Silenciar 1h", mutePi)
+            builder.addAction(android.R.drawable.ic_menu_add, "Mais disto", likePi)
+            // 👎/Copiar omitted to stay within 3-visible-action budget
+        } else if (copyPi != null) {
             builder.addAction(android.R.drawable.ic_menu_edit, "Copiar resposta", copyPi)
             builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Silenciar 1h", mutePi)
             builder.addAction(android.R.drawable.ic_menu_add, "Mais disto", likePi)

@@ -8,16 +8,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -195,18 +191,28 @@ private fun InterestsEditor(
     val keyboard = LocalSoftwareKeyboardController.current
 
     // derivedStateOf so the filter is only recomputed when the query
-    // or the selected set changes. 40 items max — enough for the
-    // user to scan, keeps the dropdown from being a wall of text.
+    // or the selected set changes. Suggestions appear ONLY while the
+    // user is typing (non-blank query): with an empty query this used
+    // to render 40 catalog entries in a 240dp nested LazyColumn that
+    // sat permanently mid-screen and swallowed vertical drag gestures —
+    // the outer profile Column never scrolled when the finger landed on
+    // it, making the learned-interests section below unreachable on a
+    // phone (user-reported "responsividade má"). 12 items keeps the
+    // list small enough to render flat (no inner scrolling at all).
     val suggestions by remember(interests) {
         derivedStateOf {
             val q = query.trim().lowercase()
-            val selected = interests.map { it.lowercase() }.toSet()
-            InterestsCatalog.ALL
-                .asSequence()
-                .filter { it.lowercase() !in selected }
-                .filter { q.isEmpty() || q in it.lowercase() }
-                .take(40)
-                .toList()
+            if (q.isEmpty()) {
+                emptyList()
+            } else {
+                val selected = interests.map { it.lowercase() }.toSet()
+                InterestsCatalog.ALL
+                    .asSequence()
+                    .filter { it.lowercase() !in selected }
+                    .filter { q in it.lowercase() }
+                    .take(12)
+                    .toList()
+            }
         }
     }
     val customAddPossible by remember(interests) {
@@ -274,38 +280,33 @@ private fun InterestsEditor(
         }),
     )
 
-    // Suggestion list: inline (not a popup dropdown) so small screens
-    // can scroll everything together. Bounded height so it doesn't
-    // push the rest of the profile off-screen.
+    // Suggestion list: flat Column, NO nested scrollable. A LazyColumn
+    // here (even height-bounded) traps vertical drags on touch — the
+    // outer verticalScroll Column stops scrolling whenever the finger
+    // lands on it. With ≤12 typing-gated suggestions the flat list is
+    // short, scrolls as part of the page, and small screens stay
+    // navigable end-to-end.
     if (suggestions.isNotEmpty() || customAddPossible) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 240.dp),
-        ) {
-            LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                if (customAddPossible) {
-                    item {
-                        Text(
-                            "+ Adicionar \"${query.trim()}\"",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { commit(query) }
-                                .padding(vertical = 10.dp, horizontal = 8.dp),
-                        )
-                    }
-                }
-                items(suggestions, key = { it }) { tag ->
-                    Text(
-                        tag,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { commit(tag) }
-                            .padding(vertical = 10.dp, horizontal = 8.dp),
-                    )
-                }
+        Column(modifier = Modifier.fillMaxWidth()) {
+            if (customAddPossible) {
+                Text(
+                    "+ Adicionar \"${query.trim()}\"",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { commit(query) }
+                        .padding(vertical = 10.dp, horizontal = 8.dp),
+                )
+            }
+            suggestions.forEach { tag ->
+                Text(
+                    tag,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { commit(tag) }
+                        .padding(vertical = 10.dp, horizontal = 8.dp),
+                )
             }
         }
     }

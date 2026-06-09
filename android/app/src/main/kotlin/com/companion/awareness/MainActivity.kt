@@ -166,6 +166,7 @@ class MainActivity : ComponentActivity() {
                     var usageGranted by remember { mutableStateOf(FocusedApp.isGranted(this@MainActivity)) }
                     var a11yEnabled by remember { mutableStateOf(AwarenessAccessibilityService.isConnected()) }
                     var ttsEnabled by remember { mutableStateOf(Settings.ttsEnabled(this@MainActivity)) }
+                    var visionEnabled by remember { mutableStateOf(Settings.visionEnabled(this@MainActivity)) }
                     var budgetText by remember {
                         mutableStateOf("%.2f".format(Settings.budgetUsdDaily(this@MainActivity)))
                     }
@@ -240,6 +241,22 @@ class MainActivity : ComponentActivity() {
                                 onCheckedChange = {
                                     ttsEnabled = it
                                     Settings.setTtsEnabled(this@MainActivity, it)
+                                },
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            // Attaches a screenshot to analysis calls in
+                            // media apps (reels/photos). Slower per call
+                            // and heavier on the shared GPU — opt-in.
+                            Text("Vision (analyse pixels)")
+                            Switch(
+                                checked = visionEnabled,
+                                onCheckedChange = {
+                                    visionEnabled = it
+                                    Settings.setVisionEnabled(this@MainActivity, it)
                                 },
                             )
                         }

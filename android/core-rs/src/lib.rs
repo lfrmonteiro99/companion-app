@@ -34,7 +34,7 @@ use awareness_core::gate::{self, GateAction, GateDecision, GateState};
 use awareness_core::memory::{MemoryEntry, MemoryRing};
 use awareness_core::types::{ContextEvent, FilterResponse};
 use awareness_core::user_profile::UserProfile;
-use jni::objects::{JClass, JString};
+use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jdouble, jstring};
 use jni::JNIEnv;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -203,19 +203,52 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
     _class: JClass<'local>,
     event_json: JString<'local>,
 ) -> jstring {
+    guard_jstring(move || analyze_inner(&mut env, &event_json, None))
+}
+
+/// Text+image variant of [`Java_com_companion_awareness_CoreBridge_analyze`].
+/// `image_png` may be Java `null` or empty — both mean "text-only tick"
+/// and behave exactly like the legacy entry point. A separate JNI symbol
+/// (instead of an overload) keeps the exported names unmangled.
+#[no_mangle]
+pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyzeWithImage<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    event_json: JString<'local>,
+    image_png: JByteArray<'local>,
+) -> jstring {
     guard_jstring(move || {
-        let raw: String = match env.get_string(&event_json) {
+        let image = if image_png.is_null() {
+            None
+        } else {
+            match env.convert_byte_array(&image_png) {
+                Ok(bytes) if !bytes.is_empty() => Some(bytes),
+                Ok(_) => None,
+                Err(e) => return err_json(&mut env, &format!("bad image bytes: {e}")),
+            }
+        };
+        analyze_inner(&mut env, &event_json, image)
+    })
+}
+
+fn analyze_inner<'local>(
+    env: &mut JNIEnv<'local>,
+    event_json: &JString<'local>,
+    image_png: Option<Vec<u8>>,
+) -> jstring {
+    {
+        let raw: String = match env.get_string(event_json) {
             Ok(s) => s.into(),
-            Err(e) => return err_json(&mut env, &format!("bad event string: {e}")),
+            Err(e) => return err_json(env, &format!("bad event string: {e}")),
         };
         let event: ContextEvent = match serde_json::from_str(&raw) {
             Ok(e) => e,
-            Err(e) => return err_json(&mut env, &format!("parse ContextEvent: {e}")),
+            Err(e) => return err_json(env, &format!("parse ContextEvent: {e}")),
         };
 
         let mut guard = lock_state();
         let Some(state) = guard.as_mut() else {
-            return err_json(&mut env, "configure() not called");
+            return err_json(env, "configure() not called");
         };
 
         // 1. Gate.
@@ -223,7 +256,7 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
         if decision.action == GateAction::Skip {
             log::info!("gate skip: {}", decision.reason);
             return ok_json(
-                &mut env,
+                env,
                 &FilterResponse::short_circuit(format!("skipped:{}", decision.reason), ""),
             );
         }
@@ -239,7 +272,7 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
                 state.config.budget_usd_daily,
             );
             return ok_json(
-                &mut env,
+                env,
                 &FilterResponse::short_circuit(
                     "budget_exceeded",
                     format!(
@@ -266,7 +299,7 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
                 current_screen.len(),
             );
             return ok_json(
-                &mut env,
+                env,
                 &FilterResponse::short_circuit("skipped:already_alerted", ""),
             );
         }
@@ -295,10 +328,11 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
         drop(guard);
 
         let Some(rt) = runtime() else {
-            return err_json(&mut env, "tokio runtime unavailable");
+            return err_json(env, "tokio runtime unavailable");
         };
 
         let matched_for_api = matched_interests.clone();
+        let image_for_api = image_png;
         let response: FilterResponse = rt.block_on(async move {
             client
                 .filter_call(
@@ -306,7 +340,9 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
                     &memory_lines,
                     &profile_ctx,
                     &matched_for_api,
-                    None, // Android frontend is text-only (no screenshot path).
+                    // Image attached by analyzeWithImage when vision is
+                    // enabled (canvas-heavy apps); None on text ticks.
+                    image_for_api.as_deref(),
                 )
                 .await
                 .unwrap_or_else(|e| FilterResponse {
@@ -405,8 +441,8 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
             }
         }
 
-        ok_json(&mut env, &response)
-    })
+        ok_json(env, &response)
+    }
 }
 
 // ── User profile JNI surface ────────────────────────────────────────

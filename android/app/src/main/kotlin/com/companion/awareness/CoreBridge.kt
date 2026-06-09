@@ -33,6 +33,16 @@ object CoreBridge {
      */
     external fun analyze(eventJson: String): String
 
+    /**
+     * [analyze] plus an optional PNG screenshot of the active window.
+     * `imagePng` may be null or empty — both behave exactly like
+     * [analyze]. When present, the Rust core attaches the image to the
+     * model call (gemma3:4b is vision-capable) so the model reasons over
+     * the actual pixels — reels, photos, charts — instead of only the
+     * extracted text. Same blocking semantics as [analyze].
+     */
+    external fun analyzeWithImage(eventJson: String, imagePng: ByteArray?): String
+
     /** Free-text biography the user can edit in ProfileActivity.
      *  Prepended to every system prompt from the next tick on. */
     external fun setBio(bio: String)

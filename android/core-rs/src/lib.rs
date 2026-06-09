@@ -363,6 +363,24 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_analyze<'local>(
                         );
                         response.should_alert = false;
                         response.alert_type = "duplicate".into();
+                    } else if let Some(anti) =
+                        state.profile.matches_anti_interest(&response.quick_message)
+                    {
+                        // Deterministic "Não interessa" enforcement. The
+                        // anti-interest list previously only reached the
+                        // model as prompt text, which the small model
+                        // ignores — the rating never actually silenced
+                        // anything. Same suppression pattern as the
+                        // duplicate branch; not pushed to memory so an
+                        // identical later tick lands here again (cheap)
+                        // instead of polluting the history the model sees.
+                        log::info!(
+                            "anti-interest: suppressing alert ({:?}) ~ rated-down ({:?})",
+                            response.quick_message,
+                            anti,
+                        );
+                        response.should_alert = false;
+                        response.alert_type = "anti_interest".into();
                     } else {
                         state.memory.push(MemoryEntry {
                             timestamp: event.timestamp,

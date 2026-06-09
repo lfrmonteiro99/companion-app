@@ -263,8 +263,18 @@ class AwarenessService : Service() {
                 put("mic_text_new", micText != null)
             }.toString()
 
+            // Vision: only when the user opted in AND the app hides
+            // content behind canvas (same media-app gate the desktop
+            // uses) — text-dense apps stay on the cheaper text path.
+            // Capture failures degrade silently to text-only.
+            val imagePng = if (Settings.visionEnabled(this) && isCanvasHeavyApp(currentApp)) {
+                captureVisionPng()
+            } else {
+                null
+            }
+
             try {
-                val responseJson = CoreBridge.analyze(eventJson)
+                val responseJson = CoreBridge.analyzeWithImage(eventJson, imagePng)
                 traceAndHandle(tickId, responseJson)
             } catch (t: Throwable) {
                 AppLog.e(TAG, "analyze failed", t)
@@ -409,6 +419,36 @@ class AwarenessService : Service() {
     private fun isCanvasHeavyApp(pkg: String?): Boolean {
         pkg ?: return false
         return pkg in canvasHeavyApps
+    }
+
+    /**
+     * Grab the latest a11y screenshot, downscale the longest side to
+     * 1024px (mirrors the desktop's DEFAULT_VISION_MAX_IMAGE_PX — image
+     * tokens scale with pixels), and PNG-encode. Null on any failure so
+     * the tick degrades to text-only instead of stalling.
+     */
+    private fun captureVisionPng(): ByteArray? {
+        val bmp = AwarenessAccessibilityService.requestScreenshot() ?: return null
+        return try {
+            val maxSide = 1024
+            val scale = maxSide.toFloat() / maxOf(bmp.width, bmp.height)
+            val scaled = if (scale < 1f) {
+                android.graphics.Bitmap.createScaledBitmap(
+                    bmp,
+                    (bmp.width * scale).toInt().coerceAtLeast(1),
+                    (bmp.height * scale).toInt().coerceAtLeast(1),
+                    true,
+                )
+            } else {
+                bmp
+            }
+            val out = java.io.ByteArrayOutputStream()
+            scaled.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+            out.toByteArray()
+        } catch (t: Throwable) {
+            AppLog.w(TAG, "vision capture failed", t)
+            null
+        }
     }
 
     private fun postAlert(

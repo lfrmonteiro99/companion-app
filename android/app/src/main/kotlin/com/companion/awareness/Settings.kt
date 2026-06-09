@@ -19,11 +19,15 @@ object Settings {
     private const val KEY_OPENAI = "openai_api_key"
     private const val KEY_BUDGET_USD = "budget_usd_daily"
     private const val KEY_TTS_ENABLED = "tts_enabled"
+    private const val KEY_VISION_ENABLED = "vision_enabled"
     private const val KEY_USER_BIO = "user_bio"
     // Dev/test default: kept generous so the app doesn't pause alerts
     // mid-session during active development. Tighten before shipping.
     private const val DEFAULT_BUDGET_USD = 5.0f
     private const val DEFAULT_TTS_ENABLED = true
+    // Vision default OFF: image calls are slower (~11s on the OMEN) and
+    // heavier on the shared 6GB GPU; the user opts in explicitly.
+    private const val DEFAULT_VISION_ENABLED = false
 
     // Encrypted store holds the API key. Non-sensitive flags (budget,
     // tts toggle) live in the plain store so they don't silently
@@ -68,6 +72,13 @@ object Settings {
 
     fun setTtsEnabled(ctx: Context, value: Boolean) {
         plainPrefs(ctx).edit().putBoolean(KEY_TTS_ENABLED, value).apply()
+    }
+
+    fun visionEnabled(ctx: Context): Boolean =
+        plainPrefs(ctx).getBoolean(KEY_VISION_ENABLED, DEFAULT_VISION_ENABLED)
+
+    fun setVisionEnabled(ctx: Context, value: Boolean) {
+        plainPrefs(ctx).edit().putBoolean(KEY_VISION_ENABLED, value).apply()
     }
 
     fun userBio(ctx: Context): String =

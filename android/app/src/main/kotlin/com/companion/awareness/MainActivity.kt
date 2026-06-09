@@ -21,6 +21,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.Row
@@ -171,9 +173,19 @@ class MainActivity : ComponentActivity() {
                         mutableStateOf("%.2f".format(Settings.budgetUsdDaily(this@MainActivity)))
                     }
 
+                    // Scrollable: the column has outgrown one phone screen
+                    // (~11 rows: key field, start/stop, battery, 2 switches,
+                    // budget, 5 nav buttons). Without scroll everything past
+                    // the fold was CLIPPED — the Profile/interests entry at
+                    // the bottom was unreachable (user-reported after the
+                    // vision switch pushed it further down). Top-aligned:
+                    // CenterVertically + scroll would still hide overflow.
                     Column(
-                        modifier = Modifier.fillMaxSize().padding(24.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         Text("Awareness (Android)", style = MaterialTheme.typography.titleLarge)

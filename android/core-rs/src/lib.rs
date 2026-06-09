@@ -478,6 +478,24 @@ pub extern "system" fn Java_com_companion_awareness_CoreBridge_setBio<'local>(
     });
 }
 
+/// Wipe rating-accumulated interests AND anti-interests (explicit
+/// interests, bio, app usage untouched) and persist. Escape hatch for a
+/// poisoned profile — a "Mais disto" tap on a junk alert persists that
+/// junk as an interest that steers every later prompt, across updates.
+#[no_mangle]
+pub extern "system" fn Java_com_companion_awareness_CoreBridge_clearLearnedInterests(
+    _env: JNIEnv,
+    _class: JClass,
+) {
+    guard_unit(|| {
+        with_state_mut(|state| {
+            state.profile.clear_learned();
+            state_profile_save(state);
+            log::info!("clearLearnedInterests: learned interests + anti-interests wiped");
+        });
+    });
+}
+
 #[no_mangle]
 pub extern "system" fn Java_com_companion_awareness_CoreBridge_learnInterest<'local>(
     mut env: JNIEnv<'local>,

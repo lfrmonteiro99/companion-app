@@ -52,6 +52,12 @@ object CoreBridge {
      *  profile's interests (or anti-interests on false). */
     external fun learnInterest(topic: String, positive: Boolean)
 
+    /** Wipe everything the rating buttons accumulated (interests AND
+     *  anti-interests). Explicit interests, bio and app usage stay.
+     *  Escape hatch for a poisoned profile — junk rated "mais disto"
+     *  persists and steers every later prompt, across app updates. */
+    external fun clearLearnedInterests()
+
     /** JSON snapshot of the current profile — used by ProfileActivity
      *  to render bio + interests + anti-interests + top-apps summary. */
     external fun getProfileText(): String

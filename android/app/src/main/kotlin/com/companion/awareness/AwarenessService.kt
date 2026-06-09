@@ -38,6 +38,23 @@ class AwarenessService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private val alertCounter = AtomicInteger(ALERT_ID_BASE)
 
+    // Visible copy of our OWN persistent notification, derived from the
+    // same string resources startForegroundWithType() uses so this guard
+    // can never drift from what the shade actually renders. The shade
+    // shows human-readable text — "Awareness is watching" — not package
+    // ids, so the package-name self-observation guard alone cannot catch
+    // a captured shade. (AlertLog 2026-06-01: the model read this
+    // notification, confabulated "a API continua ativada em background a
+    // consumir bateria", and the memory ring repeated it over every
+    // later screen.)
+    private val selfNotificationMarkers: List<String> by lazy {
+        listOf(
+            getString(R.string.notification_title),
+            getString(R.string.notification_text),
+            getString(R.string.channel_name),
+        )
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
         val data: Intent? = intent?.getParcelableExtra(EXTRA_DATA)
@@ -205,12 +222,32 @@ class AwarenessService : Service() {
             // contains our own package name + crash traces. Feeding that
             // to the model just produces alerts *about* our previous
             // alerts, in a tightening loop. Drop those ticks entirely.
+            // Also matches the notification's human-readable copy
+            // (selfNotificationMarkers) — the shade renders text, not
+            // package ids, so the string checks below never fire on it.
             val looksSelfReferential = currentApp == packageName ||
                 screenText.contains("com.companion.awareness") ||
                 screenText.contains("AwarenessApp") ||
-                screenText.contains("awareness-core")
+                screenText.contains("awareness-core") ||
+                selfNotificationMarkers.any { screenText.contains(it) }
             if (looksSelfReferential) {
                 TraceLog.gateSkip(tickId, "self_referential")
+                delay(TICK_MS)
+                continue
+            }
+
+            // System-chrome guard. The notification shade / quick
+            // settings (com.android.systemui) is never useful input:
+            // it always contains our own persistent notification plus
+            // battery/clock chrome, and narrating what the user sees in
+            // the shade is exactly the behaviour the prompt forbids.
+            // This is the upstream fix for the self-narration loop —
+            // the Rust-side dedup (pre-API jaccard on screens, post-API
+            // jaccard on quick_messages) missed it because each repeat
+            // carried a different screen-quote prefix that diluted the
+            // trigram similarity below threshold.
+            if (currentApp == "com.android.systemui") {
+                TraceLog.gateSkip(tickId, "system_chrome")
                 delay(TICK_MS)
                 continue
             }

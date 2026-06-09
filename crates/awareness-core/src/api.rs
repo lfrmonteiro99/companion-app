@@ -129,6 +129,42 @@ fn filter_response_schema() -> serde_json::Value {
     })
 }
 
+/// Assemble the (system, user) turn contents for `filter_call`.
+///
+/// The system turn is BYTE-STABLE across every call — always exactly
+/// `SYSTEM_PROMPT`. Ollama/llama.cpp prefix caching reuses the KV cache only
+/// up to the first byte that differs between requests, so anything dynamic
+/// prepended to the system turn forces a full ~2700-token re-prefill on every
+/// tick (this was the previous behaviour: the user profile was prepended
+/// here). The profile is semi-static — bio edits and rating-accumulated
+/// interests change rarely — so it now LEADS the user turn: while unchanged,
+/// the cached prefix extends across it too; when it changes, only the user
+/// turn re-prefills. Truly per-tick content (history, matched interests,
+/// event) stays at the tail.
+fn build_turns(
+    user_profile: &str,
+    memory: &str,
+    interests_line: &str,
+    event_json: &str,
+) -> (String, String) {
+    let profile_block = if user_profile.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "PERFIL DO UTILIZADOR (prioriza isto ao decidir o que é relevante):\n{}\n\n---\n\n",
+            user_profile.trim(),
+        )
+    };
+    let user_content = if memory.is_empty() {
+        format!("{profile_block}{interests_line}{event_json}")
+    } else {
+        format!(
+            "{profile_block}Histórico recente (oldest first):\n{memory}\n\n{interests_line}Contexto actual:\n{event_json}",
+        )
+    };
+    (SYSTEM_PROMPT.to_string(), user_content)
+}
+
 /// Derive Ollama's native chat endpoint, tolerating a trailing `/v1` or `/`.
 pub(crate) fn ollama_chat_endpoint(base_url: &str) -> String {
     let root = base_url
@@ -441,28 +477,8 @@ impl OpenAiClient {
                 matched_interests.join(", "),
             )
         };
-        let user_content = if memory.is_empty() {
-            format!("{interests_line}{event_json}")
-        } else {
-            format!(
-                "Histórico recente (oldest first):\n{memory}\n\n{interests_line}Contexto actual:\n{event_json}",
-            )
-        };
-
-        // Prepend any accumulated user profile (bio + interests +
-        // anti-interests + top apps) to the system content. Keeps the
-        // original instruction block intact while giving the model a
-        // concrete picture of who the user is and what kind of alerts
-        // they've opted into.
-        let system_content = if user_profile.trim().is_empty() {
-            SYSTEM_PROMPT.to_string()
-        } else {
-            format!(
-                "PERFIL DO UTILIZADOR (prioriza isto ao decidir o que é relevante):\n{}\n\n---\n\n{}",
-                user_profile.trim(),
-                SYSTEM_PROMPT,
-            )
-        };
+        let (system_content, user_content) =
+            build_turns(user_profile, memory, &interests_line, &event_json);
 
         // Both the text and vision paths run gemma3:4b — a non-thinking
         // instruction-follower — and both use the SAME structured-outputs
@@ -648,6 +664,35 @@ fn is_tailscale_cgnat(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_turn_is_byte_stable_regardless_of_profile() {
+        // Prefix caching reuses KV only up to the first differing byte —
+        // the system turn must be EXACTLY the same bytes on every call,
+        // profile or no profile. A regression here silently costs a full
+        // ~2700-token re-prefill per tick.
+        let (sys_empty, _) = build_turns("", "history", "", "{}");
+        let (sys_full, _) = build_turns("bio: dev", "history", "interests\n\n", "{}");
+        assert_eq!(sys_empty, SYSTEM_PROMPT);
+        assert_eq!(sys_full, SYSTEM_PROMPT);
+    }
+
+    #[test]
+    fn profile_leads_user_turn_then_history_then_event() {
+        let (_, user) = build_turns("bio: dev", "old alert", "interesse\n\n", "{\"app\":\"x\"}");
+        let p = user.find("PERFIL DO UTILIZADOR").expect("profile present");
+        let h = user.find("Histórico recente").expect("history present");
+        let e = user.find("{\"app\":\"x\"}").expect("event present");
+        assert!(p < h && h < e, "order must be profile < history < event");
+    }
+
+    #[test]
+    fn empty_profile_and_memory_user_turn_is_just_interests_and_event() {
+        let (_, user) = build_turns("", "", "", "{\"app\":\"x\"}");
+        assert_eq!(user, "{\"app\":\"x\"}");
+        assert!(!user.contains("PERFIL"));
+        assert!(!user.contains("Histórico"));
+    }
 
     fn sample(parse_error: Option<String>) -> FilterResponse {
         FilterResponse {

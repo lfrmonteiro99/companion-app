@@ -55,6 +55,16 @@ class AwarenessService : Service() {
         )
     }
 
+    // Bodies of the last alerts WE posted. The tick loop drops any capture
+    // whose screen or mic text is mostly one of these: a heads-up banner of
+    // our own alert gets OCR'd over the foreground app (currentApp is NOT
+    // systemui, so the shade guard can't catch it), and with TTS on the mic
+    // transcribes our own spoken alert. Both re-feed the model its own
+    // words — the "Repetidamente alertado sobre isto" loop of 2026-06-09.
+    // Single-coroutine access (tick loop + handleResponse run on the same
+    // loop), so no synchronization needed.
+    private val recentAlertBodies = ArrayDeque<String>()
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
         val data: Intent? = intent?.getParcelableExtra(EXTRA_DATA)
@@ -251,6 +261,21 @@ class AwarenessService : Service() {
                 continue
             }
 
+            // Self-echo guard: ≥70% of a recent alert body's tokens present
+            // in this capture means we're looking at (or hearing) our own
+            // alert, not user content. OCR of a heads-up reproduces the body
+            // near-verbatim (~0.9 overlap); legit screens about the same
+            // topic re-use far fewer of the exact same words.
+            val echoed = recentAlertBodies.any { body ->
+                tokenOverlap(body, screenText) >= SELF_ECHO_OVERLAP ||
+                    (!micText.isNullOrBlank() && tokenOverlap(body, micText) >= SELF_ECHO_OVERLAP)
+            }
+            if (echoed) {
+                TraceLog.gateSkip(tickId, "self_echo")
+                delay(TICK_MS)
+                continue
+            }
+
             val eventJson = JSONObject().apply {
                 put("timestamp", Instant.now().toString())
                 put("app", currentApp ?: JSONObject.NULL)
@@ -378,6 +403,11 @@ class AwarenessService : Service() {
         }
         val title = alertType.replaceFirstChar { it.uppercase() }
         postAlert(title, body, urgency, suggestedReply, suggestedAction, generateSeed)
+        // Feed the self-echo guard. Cap keeps comparisons cheap; oldest out.
+        recentAlertBodies.addLast(body)
+        while (recentAlertBodies.size > RECENT_ALERT_BODIES_CAP) {
+            recentAlertBodies.removeFirst()
+        }
         TraceLog.notificationPosted(tickId, alertType, urgency)
 
         AlertLog.append(
@@ -419,6 +449,22 @@ class AwarenessService : Service() {
         pkg ?: return false
         return pkg in canvasHeavyApps
     }
+
+    /** Fraction of [body]'s distinct tokens (length ≥3, lowercased) that
+     *  also occur in [captured]. 1.0 = every body token is on screen. */
+    private fun tokenOverlap(body: String, captured: String): Double {
+        val bodyTokens = tokenize(body)
+        if (bodyTokens.isEmpty()) return 0.0
+        val capturedTokens = tokenize(captured)
+        val hits = bodyTokens.count { it in capturedTokens }
+        return hits.toDouble() / bodyTokens.size
+    }
+
+    private fun tokenize(text: String): Set<String> =
+        text.lowercase()
+            .split(Regex("[^\\p{L}\\p{N}]+"))
+            .filter { it.length >= 3 }
+            .toSet()
 
     /**
      * Grab the latest a11y screenshot, downscale the longest side to
@@ -670,6 +716,10 @@ class AwarenessService : Service() {
     }
 
     companion object {
+        /** See the self-echo guard in runTickLoop. */
+        private const val SELF_ECHO_OVERLAP = 0.7
+        private const val RECENT_ALERT_BODIES_CAP = 8
+
         private const val TAG = "AwarenessService"
         private const val CHANNEL_ID = "awareness_capture"
         private const val ALERT_CHANNEL_ID = "awareness_alerts"

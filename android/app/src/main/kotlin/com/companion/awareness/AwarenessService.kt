@@ -291,7 +291,13 @@ class AwarenessService : Service() {
             // content behind canvas (same media-app gate the desktop
             // uses) — text-dense apps stay on the cheaper text path.
             // Capture failures degrade silently to text-only.
-            val imagePng = if (Settings.visionEnabled(this) && isCanvasHeavyApp(currentApp)) {
+            val visionOptedIn = Settings.visionEnabled(this)
+            // Retain MediaProjection frames only while vision is on, so
+            // captureVisionPng() has an image in no-accessibility mode (the
+            // a11y screenshot API is unavailable there). No-op in a11y mode
+            // where `screen` is null and the a11y screenshot is used instead.
+            screen?.setCacheFrames(visionOptedIn)
+            val imagePng = if (visionOptedIn && isCanvasHeavyApp(currentApp)) {
                 captureVisionPng()
             } else {
                 null
@@ -467,13 +473,19 @@ class AwarenessService : Service() {
             .toSet()
 
     /**
-     * Grab the latest a11y screenshot, downscale the longest side to
+     * Grab the latest frame — a11y screenshot in accessibility mode, else
+     * the cached MediaProjection frame — downscale the longest side to
      * 1024px (mirrors the desktop's DEFAULT_VISION_MAX_IMAGE_PX — image
      * tokens scale with pixels), and PNG-encode. Null on any failure so
      * the tick degrades to text-only instead of stalling.
      */
     private fun captureVisionPng(): ByteArray? {
-        val bmp = AwarenessAccessibilityService.requestScreenshot() ?: return null
+        // Prefer the a11y screenshot (accessibility mode); fall back to the
+        // latest MediaProjection frame so vision also works in
+        // no-accessibility mode instead of silently doing nothing.
+        val bmp = AwarenessAccessibilityService.requestScreenshot()
+            ?: screen?.latestFrame()
+            ?: return null
         return try {
             val maxSide = 1024
             val scale = maxSide.toFloat() / maxOf(bmp.width, bmp.height)

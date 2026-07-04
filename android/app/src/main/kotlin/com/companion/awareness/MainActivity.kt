@@ -211,16 +211,18 @@ class MainActivity : ComponentActivity() {
                         }
                         Text(
                             if (a11yEnabled) {
-                                "Accessibility: on — capture survives background and lock screen"
+                                "Accessibility: on — cleaner text capture, and it survives background and lock screen"
                             } else {
-                                "Accessibility: OFF — REQUIRED so the OS doesn't kill capture. Tap below to enable."
+                                "Accessibility: off (optional). Capture already works via screen recording. " +
+                                    "Enabling it gives cleaner text and helps capture keep running on the lock " +
+                                    "screen on some phones (e.g. Samsung) — but it is not required to use the app."
                             },
                         )
                         if (!a11yEnabled) {
                             Button(onClick = {
                                 startActivity(Intent(SystemSettings.ACTION_ACCESSIBILITY_SETTINGS))
                             }) {
-                                Text("Enable accessibility (required)")
+                                Text("Enable accessibility (optional)")
                             }
                         }
                         var batteryOptimized by remember {

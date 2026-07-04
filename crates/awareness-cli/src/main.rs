@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -519,6 +519,11 @@ async fn run(args: RunArgs) -> Result<()> {
     let (alert_tx, alert_rx) = mpsc::channel(16);
     let (media_audio_tx, media_audio_rx) = mpsc::channel::<String>(8);
     let media_active = Arc::new(AtomicBool::new(false));
+    // Epoch-ms until which our own TTS alert is playing. The eval loop sets
+    // it around each spoken alert; the whisper loops drop any speech captured
+    // within the window so the app doesn't transcribe (and re-alert on) its
+    // own voice. 0 = not speaking.
+    let speaking_until = Arc::new(AtomicI64::new(0));
 
     // Capture tasks
     let _screen = capture::spawn_screen_capture(screen_tx, cfg.clone()).await?;
@@ -646,8 +651,16 @@ async fn run(args: RunArgs) -> Result<()> {
     // Whisper loop: mic_rx → transcribe → transcript_tx
     {
         let whisper = whisper.clone();
+        let speaking_until = speaking_until.clone();
         tokio::spawn(async move {
             while let Some(chunk) = mic_rx.recv().await {
+                // Self-narration guard: skip chunks whose speech began while
+                // our own TTS alert was playing — otherwise the app hears
+                // itself and voice_activity/emotional loop.
+                if chunk.started_at.timestamp_millis() <= speaking_until.load(Ordering::Relaxed) {
+                    tracing::debug!("mic: dropping self-narration chunk (TTS playing)");
+                    continue;
+                }
                 let w = whisper.clone();
                 let result = tokio::task::spawn_blocking(move || w.transcribe(&chunk)).await;
                 match result {
@@ -675,9 +688,15 @@ async fn run(args: RunArgs) -> Result<()> {
         let whisper_m = whisper.clone();
         let active = media_active.clone();
         let out = media_audio_tx.clone();
+        let speaking_until_m = speaking_until.clone();
         tokio::spawn(async move {
             while let Some(chunk) = chunk_rx.recv().await {
                 if !active.load(Ordering::Relaxed) {
+                    continue;
+                }
+                // Self-narration guard: the monitor source also carries our
+                // own TTS output — drop chunks captured during playback.
+                if chunk.started_at.timestamp_millis() <= speaking_until_m.load(Ordering::Relaxed) {
                     continue;
                 }
                 let w = whisper_m.clone();
@@ -714,7 +733,7 @@ async fn run(args: RunArgs) -> Result<()> {
     );
 
     // Eval loop (terminal alerts + ratings + optional TTS)
-    let _eval = spawn_eval_loop(alert_rx, ratings_path, tts_config).await?;
+    let _eval = spawn_eval_loop(alert_rx, ratings_path, tts_config, speaking_until.clone()).await?;
 
     // Analysis backend (text-only; local LLM via Ollama).
     let backend = Backend::new(cfg.backend, &cfg)?;

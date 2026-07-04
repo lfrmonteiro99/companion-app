@@ -79,11 +79,14 @@ else
     check_fail "python3 not found"
 fi
 
-# 8. Check OPENAI_API_KEY is set and non-empty
-if [ -n "${OPENAI_API_KEY:-}" ]; then
-    check_pass "OPENAI_API_KEY set"
+# 8. LLM auth. The default target is a LOCAL Ollama server, which needs no
+# key — so a missing key must NOT fail the check. A key is only relevant if
+# you point --llm-base-url at an endpoint that enforces auth, and the app
+# reads it from AWARENESS_LLM_API_KEY (not OPENAI_API_KEY).
+if [ -n "${AWARENESS_LLM_API_KEY:-}" ]; then
+    check_pass "AWARENESS_LLM_API_KEY set (bearer token will be sent)"
 else
-    check_fail "OPENAI_API_KEY not set or empty"
+    check_pass "no LLM API key set — correct for the default local Ollama target"
 fi
 
 # Exit status

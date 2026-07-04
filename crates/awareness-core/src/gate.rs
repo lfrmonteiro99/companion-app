@@ -25,6 +25,15 @@ pub struct GateState {
     /// Timestamp of the most recent voice_activity send. Tracked separately
     /// from last_sent_at so the short voice cooldown doesn't block other rules.
     pub last_voice_send: Option<DateTime<Utc>>,
+    /// True once a "time_on_app" alert has fired for the current app session.
+    /// Reset on app change so the time-on-app nudge is one-shot per app,
+    /// not re-fired on every tick while the user stays past the threshold.
+    pub time_alert_sent: bool,
+    /// Screen text captured at the last "emotional" send. A persistent
+    /// frustration keyword frozen on screen must not re-fire every periodic
+    /// tick — we only re-alert when the surrounding text actually changed or
+    /// a fresh voice utterance arrived.
+    pub last_emotional_text: Option<String>,
 }
 
 /// Whole-word (boundary-aware) substring search. Matches `keyword` only
@@ -81,17 +90,25 @@ pub fn evaluate(event: &ContextEvent, state: &mut GateState, cfg: &Config) -> Ga
         state.last_app = event.app.clone();
         state.last_sent_at = Some(Utc::now());
         state.last_sent_text = Some(event.screen_text_excerpt.clone());
+        // New app session → reset the per-session latches so time_on_app and
+        // emotional can each fire once for this app again.
+        state.time_alert_sent = false;
+        state.last_emotional_text = None;
         return GateDecision {
             action: GateAction::Send,
             reason: "app_change".to_string(),
         };
     }
 
-    // Rule 2: Time on app exceeds threshold.
+    // Rule 2: Time on app exceeds threshold — one-shot per app session.
+    // Without the `time_alert_sent` latch this re-fired on every tick past
+    // the threshold (the periodic re-emit runs ~every 10s), spamming the same
+    // nudge until the app changed.
     let threshold_seconds = cfg.gate_app_time_threshold_minutes * 60;
-    if event.duration_on_app_seconds >= threshold_seconds {
+    if event.duration_on_app_seconds >= threshold_seconds && !state.time_alert_sent {
         state.last_sent_at = Some(Utc::now());
         state.last_sent_text = Some(event.screen_text_excerpt.clone());
+        state.time_alert_sent = true;
         return GateDecision {
             action: GateAction::Send,
             reason: "time_on_app".to_string(),
@@ -111,12 +128,27 @@ pub fn evaluate(event: &ContextEvent, state: &mut GateState, cfg: &Config) -> Ga
     });
 
     if has_frustration {
-        state.last_sent_at = Some(Utc::now());
-        state.last_sent_text = Some(event.screen_text_excerpt.clone());
-        return GateDecision {
-            action: GateAction::Send,
-            reason: "emotional".to_string(),
-        };
+        // Only fire when the frustration signal is genuinely new: either a
+        // fresh voice utterance arrived, or the on-screen text changed since
+        // the last emotional alert. A static frustration keyword frozen on
+        // screen (e.g. a persistent "error"/"failed"/"broken" line) used to
+        // re-fire every periodic tick because "emotional" also bypasses the
+        // downstream min-send cooldown — sustained alert + LLM spam from one
+        // unchanging trigger.
+        let is_new_trigger = event.mic_text_new
+            || state.last_emotional_text.as_deref() != Some(event.screen_text_excerpt.as_str());
+        if is_new_trigger {
+            state.last_sent_at = Some(Utc::now());
+            state.last_sent_text = Some(event.screen_text_excerpt.clone());
+            state.last_emotional_text = Some(event.screen_text_excerpt.clone());
+            return GateDecision {
+                action: GateAction::Send,
+                reason: "emotional".to_string(),
+            };
+        }
+        // Same stale frustrated screen, no fresh voice → fall through to the
+        // lower-priority rules (which will Skip, or fire periodic_check only
+        // after the normal 15-min window).
     }
 
     // Rule 4: Screen text changed significantly — user typed new content into
@@ -252,6 +284,7 @@ mod tests {
             last_sent_at: Some(Utc::now()),
             last_sent_text: None,
             last_voice_send: None,
+            ..Default::default()
         };
         let event = make_event(); // app = "vscode", differs from "firefox"
         let decision = evaluate(&event, &mut state, &cfg);
@@ -268,6 +301,7 @@ mod tests {
             last_sent_at: Some(Utc::now()),
             last_sent_text: None,
             last_voice_send: None,
+            ..Default::default()
         };
         let mut event = make_event();
         event.duration_on_app_seconds = 25 * 60; // exactly at threshold
@@ -284,6 +318,7 @@ mod tests {
             last_sent_at: Some(Utc::now()),
             last_sent_text: None,
             last_voice_send: None,
+            ..Default::default()
         };
         let mut event = make_event();
         event.mic_text_recent = Some("wtf is this".to_string());
@@ -303,6 +338,7 @@ mod tests {
             last_sent_at: Some(Utc::now()),
             last_sent_text: Some("the terror of deadlines".to_string()),
             last_voice_send: None,
+            ..Default::default()
         };
         let mut event = make_event();
         event.screen_text_excerpt = "the terror of deadlines".to_string();
@@ -321,6 +357,7 @@ mod tests {
             last_sent_at: Some(Utc::now()),
             last_sent_text: Some("some code here".to_string()),
             last_voice_send: None,
+            ..Default::default()
         };
         let mut event = make_event();
         event.screen_text_excerpt = "the build is broken again".to_string();
@@ -338,6 +375,7 @@ mod tests {
             // Same text as the event → no new words → no text_changed fire
             last_sent_text: Some("some code here".to_string()),
             last_voice_send: None,
+            ..Default::default()
         };
         let mut event = make_event();
         event.duration_on_app_seconds = 0; // below threshold
@@ -356,6 +394,7 @@ mod tests {
             last_sent_at: Some(seven_sec_ago),
             last_sent_text: Some("fixed prefix text here".to_string()),
             last_voice_send: None,
+            ..Default::default()
         };
         let mut event = make_event();
         event.screen_text_excerpt =
@@ -374,6 +413,7 @@ mod tests {
             last_sent_at: Some(two_sec_ago),
             last_sent_text: Some("fixed prefix text here".to_string()),
             last_voice_send: None,
+            ..Default::default()
         };
         let mut event = make_event();
         event.screen_text_excerpt =
@@ -391,6 +431,7 @@ mod tests {
             last_sent_at: Some(Utc::now()), // blocks periodic_check
             last_sent_text: Some("some code here".to_string()),
             last_voice_send: None,
+            ..Default::default()
         };
         let mut event = make_event();
         event.mic_text_recent = Some("what's the time complexity of this?".to_string());
@@ -410,6 +451,7 @@ mod tests {
             last_sent_at: Some(Utc::now()),
             last_sent_text: Some("some code here".to_string()),
             last_voice_send: Some(two_sec_ago),
+            ..Default::default()
         };
         let mut event = make_event();
         event.mic_text_recent = Some("another thought".to_string());
@@ -427,6 +469,7 @@ mod tests {
             last_sent_at: Some(Utc::now()),
             last_sent_text: Some("some code here".to_string()),
             last_voice_send: None,
+            ..Default::default()
         };
         let mut event = make_event();
         event.mic_text_recent = Some("stale transcript".to_string());
@@ -444,10 +487,97 @@ mod tests {
             last_sent_at: Some(sixteen_min_ago),
             last_sent_text: Some("some code here".to_string()),
             last_voice_send: None,
+            ..Default::default()
         };
         let event = make_event(); // screen_text_excerpt is non-empty
         let decision = evaluate(&event, &mut state, &cfg);
         assert_eq!(decision.action, GateAction::Send);
         assert_eq!(decision.reason, "periodic_check");
+    }
+
+    #[test]
+    fn time_on_app_is_one_shot_per_app_session() {
+        let cfg = make_config();
+        let mut state = GateState {
+            last_app: Some("vscode".to_string()),
+            last_sent_at: Some(Utc::now()),
+            last_sent_text: None,
+            last_voice_send: None,
+            ..Default::default()
+        };
+        let mut event = make_event();
+        event.duration_on_app_seconds = 26 * 60; // past threshold
+        assert_eq!(evaluate(&event, &mut state, &cfg).reason, "time_on_app");
+        // Same app, still past threshold → must NOT re-fire the nudge.
+        assert_ne!(
+            evaluate(&event, &mut state, &cfg).reason,
+            "time_on_app",
+            "time_on_app must be one-shot per app session, not re-fired every tick"
+        );
+    }
+
+    #[test]
+    fn time_on_app_refires_after_app_change_resets_latch() {
+        let cfg = make_config();
+        let mut state = GateState {
+            last_app: Some("vscode".to_string()),
+            last_sent_at: Some(Utc::now()),
+            last_sent_text: None,
+            last_voice_send: None,
+            ..Default::default()
+        };
+        let mut event = make_event();
+        event.duration_on_app_seconds = 26 * 60;
+        assert_eq!(evaluate(&event, &mut state, &cfg).reason, "time_on_app");
+        // Switch away, then back — the app_change resets the latch.
+        let mut other = make_event();
+        other.app = Some("firefox".to_string());
+        assert_eq!(evaluate(&other, &mut state, &cfg).reason, "app_change");
+        let mut back = make_event(); // app "vscode" again → app_change first
+        back.duration_on_app_seconds = 26 * 60;
+        assert_eq!(evaluate(&back, &mut state, &cfg).reason, "app_change");
+        // Latch was reset → same app past threshold fires once more.
+        assert_eq!(evaluate(&back, &mut state, &cfg).reason, "time_on_app");
+    }
+
+    #[test]
+    fn emotional_does_not_refire_on_static_screen() {
+        let cfg = make_config();
+        let mut state = GateState {
+            last_app: Some("vscode".to_string()),
+            last_sent_at: Some(Utc::now()),
+            last_sent_text: None,
+            last_voice_send: None,
+            ..Default::default()
+        };
+        let mut event = make_event();
+        event.screen_text_excerpt = "the build is broken again".to_string();
+        event.mic_text_new = false;
+        assert_eq!(evaluate(&event, &mut state, &cfg).reason, "emotional");
+        // Identical frustrated screen, no fresh voice → must NOT re-fire.
+        assert_ne!(
+            evaluate(&event, &mut state, &cfg).reason,
+            "emotional",
+            "a static frustrated screen must not re-fire emotional every tick"
+        );
+    }
+
+    #[test]
+    fn emotional_refires_when_screen_text_changes() {
+        let cfg = make_config();
+        let mut state = GateState {
+            last_app: Some("vscode".to_string()),
+            last_sent_at: Some(Utc::now()),
+            last_sent_text: None,
+            last_voice_send: None,
+            ..Default::default()
+        };
+        let mut event = make_event();
+        event.screen_text_excerpt = "the build is broken".to_string();
+        assert_eq!(evaluate(&event, &mut state, &cfg).reason, "emotional");
+        // Different frustrated content → genuinely new trigger, re-fires.
+        let mut event2 = make_event();
+        event2.screen_text_excerpt = "fatal error while linking parser".to_string();
+        assert_eq!(evaluate(&event2, &mut state, &cfg).reason, "emotional");
     }
 }

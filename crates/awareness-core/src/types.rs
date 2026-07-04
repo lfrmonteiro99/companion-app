@@ -77,17 +77,17 @@ pub struct FilterResponse {
     pub quick_message: String,
     /// A ready-to-use reply the user can copy/paste/insert (chats, voice_reply).
     /// `None` when no reply is applicable.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_reply: Option<String>,
     /// A concrete next action the user could take (a CTA). `None` when none.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_action: Option<String>,
     /// When the screen is a strong seed for one of the user's content
     /// channels, the niche key to generate for (e.g. "portugal_history").
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_niche: Option<String>,
     /// Concise PT-EU seed topic derived from the screen, to feed generation.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_theme: Option<String>,
     pub tokens_in: u32,
     pub tokens_out: u32,

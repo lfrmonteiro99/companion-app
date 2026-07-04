@@ -5,6 +5,8 @@ use awareness_core::types::{ContextEvent, FilterResponse};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -47,6 +49,10 @@ pub async fn spawn_eval_loop(
     mut alert_rx: mpsc::Receiver<AlertPrompt>,
     ratings_path: PathBuf,
     tts_config: TtsConfig,
+    // Epoch-ms until which our own TTS is playing. Shared with the mic
+    // transcription loop so it can drop self-narration (the app hearing
+    // its own spoken alerts). 0 = not speaking.
+    speaking_until: Arc<AtomicI64>,
 ) -> Result<JoinHandle<()>> {
     let (line_tx, mut line_rx) = mpsc::unbounded_channel::<PromptOutcome>();
 
@@ -89,6 +95,7 @@ pub async fn spawn_eval_loop(
                 &fallback_path,
                 &mut line_rx,
                 &tts_config,
+                &speaking_until,
             )
             .await;
         }
@@ -105,7 +112,15 @@ async fn handle_prompt(
     fallback_path: &PathBuf,
     line_rx: &mut mpsc::UnboundedReceiver<PromptOutcome>,
     tts_config: &TtsConfig,
+    speaking_until: &AtomicI64,
 ) {
+    // Drain any stdin the user typed while no alert was on screen. Without
+    // this, a stray line buffered between prompts (leftover input after a
+    // timeout, an accidental keypress, piped echo) is consumed by the next
+    // alert as its rating — silently corrupting ratings.jsonl with a value
+    // attributed to the wrong tick_id.
+    while line_rx.try_recv().is_ok() {}
+
     let now = Local::now().format("%H:%M").to_string();
     let alert_type_upper = prompt.api_response.alert_type.to_uppercase();
     let quick_message = &prompt.api_response.quick_message;
@@ -167,6 +182,17 @@ async fn handle_prompt(
     }
 
     tts::speak(quick_message, tts_config);
+
+    // Self-narration guard: while our own alert is being spoken, mark a mute
+    // window so the mic loop drops any speech it captures during playback
+    // (otherwise the app transcribes itself → voice_activity/emotional loop).
+    // Only when TTS will actually play.
+    if tts_config.enabled && tts_config.command.is_some() {
+        let until = chrono::Utc::now().timestamp_millis()
+            + tts::estimated_playback_ms(quick_message) as i64
+            + 2_000; // margin for playback tail / speaker→mic latency
+        speaking_until.store(until, Ordering::Relaxed);
+    }
 
     let outcome = next_outcome(line_rx, 30).await;
     if let PromptOutcome::IoError(msg) = &outcome {

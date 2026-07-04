@@ -97,6 +97,17 @@ pub fn speak(text: &str, cfg: &TtsConfig) {
     }
 }
 
+/// Rough estimate (in ms) of how long the resolved backend will take to
+/// speak `text`, using the same shortening `speak` applies. Used by the
+/// self-narration guard to mute mic transcription while our own alert is
+/// playing, so the app doesn't hear itself and loop.
+pub fn estimated_playback_ms(text: &str) -> u64 {
+    let spoken = shorten_for_tts(text);
+    let chars = spoken.chars().count() as u64;
+    // ~16 chars/s of clear TTS speech ≈ 60 ms/char; clamp to a sane window.
+    (chars * 60).clamp(1_500, 15_000)
+}
+
 /// Keep TTS utterances short: first sentence, capped at 220 chars. Strips
 /// code fences and backticks that read terribly aloud.
 fn shorten_for_tts(text: &str) -> String {

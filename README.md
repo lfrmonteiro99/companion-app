@@ -33,9 +33,11 @@ cargo run -- run
 
 The desktop CLI talks to a local LLM over the Ollama
 endpoint. The default target is the OMEN box at
-`http://100.68.73.123:11434/v1` running `qwen3:8b` (clean PT-EU, ~3s
-warm). Override with `--llm-base-url` / `--llm-model` or the
-`AWARENESS_LLM_*` env vars; see `config.example.toml` for a TOML form.
+`http://100.68.73.123:11434/v1` running `gemma3:4b` (non-thinking, ~5s
+warm, valid structured output). `qwen3:8b` was tried but its thinking
+preamble blew past the request timeout and zeroed out every alert.
+Override with `--llm-base-url` / `--llm-model` or the `AWARENESS_LLM_*`
+env vars; see `config.example.toml` for a TOML form.
 
 No API key is required for the default Ollama target. The
 `AWARENESS_LLM_API_KEY` env var is sent as a bearer token if you point

@@ -295,7 +295,11 @@ class MainActivity : ComponentActivity() {
                         )
                         Text("Status: $statusText")
                         Button(
-                            enabled = apiKey.isNotBlank(),
+                            // The default backend is a local Ollama with no
+                            // auth, so a blank key must NOT block Start —
+                            // gating on apiKey.isNotBlank() left the documented
+                            // keyless default flow unable to ever start.
+                            enabled = true,
                             onClick = {
                                 usageGranted = FocusedApp.isGranted(this@MainActivity)
                                 a11yEnabled = AwarenessAccessibilityService.isConnected()

@@ -69,51 +69,93 @@ async fn spawn_mic_capture_full(tx: mpsc::Sender<AudioChunk>) -> Result<JoinHand
         use std::sync::{Arc as StdArc, Mutex};
 
         let host = cpal::default_host();
-        let device = match host.default_input_device() {
-            Some(d) => d,
-            None => {
-                let _ = ready_tx.send(Err(anyhow::anyhow!("No default input device")));
+        let mut first = true;
+        let mut backoff = std::time::Duration::from_secs(1);
+
+        loop {
+            // (Re)build the input device + stream. A transient cpal error
+            // (device unplug/replug, PipeWire/PulseAudio restart) trips the
+            // error latch and returns from vad_loop; we rebuild instead of
+            // letting mic capture die silently for the rest of the run.
+            #[allow(clippy::type_complexity)]
+            let setup: Result<(
+                std::sync::mpsc::Receiver<Vec<i16>>,
+                StdArc<Mutex<Option<String>>>,
+                cpal::Stream,
+            )> = (|| {
+                let device = host
+                    .default_input_device()
+                    .ok_or_else(|| anyhow::anyhow!("No default input device"))?;
+                tracing::info!("Audio device: {}", device.name().unwrap_or_default());
+
+                let config = cpal::StreamConfig {
+                    channels: 1,
+                    sample_rate: cpal::SampleRate(16_000),
+                    buffer_size: cpal::BufferSize::Default,
+                };
+
+                let (cpal_tx, cpal_rx) = std::sync::mpsc::channel::<Vec<i16>>();
+                let error_flag = StdArc::new(Mutex::new(Option::<String>::None));
+                let error_flag_cb = StdArc::clone(&error_flag);
+
+                let stream = device
+                    .build_input_stream(
+                        &config,
+                        move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                            let _ = cpal_tx.send(data.to_vec());
+                        },
+                        move |err| {
+                            *error_flag_cb.lock().unwrap() = Some(err.to_string());
+                        },
+                        None,
+                    )
+                    .map_err(|e| anyhow::anyhow!("build_input_stream: {e}"))?;
+                stream
+                    .play()
+                    .map_err(|e| anyhow::anyhow!("stream.play: {e}"))?;
+                Ok((cpal_rx, error_flag, stream))
+            })();
+
+            let (cpal_rx, error_flag, stream) = match setup {
+                Ok(v) => {
+                    // First successful open unblocks the caller. Later opens
+                    // (after a rebuild) don't re-signal — the receiver is gone.
+                    if first {
+                        let _ = ready_tx.send(Ok(()));
+                        first = false;
+                    }
+                    backoff = std::time::Duration::from_secs(1);
+                    v
+                }
+                Err(e) => {
+                    if first {
+                        // Hard startup failure — propagate as before so the
+                        // caller's `ready_rx.recv()??` surfaces it.
+                        let _ = ready_tx.send(Err(e));
+                        return;
+                    }
+                    tracing::error!("mic capture setup failed: {e}; retrying in {backoff:?}");
+                    std::thread::sleep(backoff);
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(30));
+                    continue;
+                }
+            };
+
+            let _stream = stream; // keep alive for the duration of vad_loop
+            vad_loop(cpal_rx, tx.clone(), error_flag);
+
+            // vad_loop returned: either a cpal error tripped the latch or the
+            // downstream channel closed (shutdown). Stop on shutdown; else
+            // rebuild so a recoverable device hiccup doesn't permanently kill
+            // mic capture with only a single warn line.
+            if tx.is_closed() {
+                tracing::info!("mic capture: transcript channel closed — stopping");
                 return;
             }
-        };
-
-        tracing::info!("Audio device: {}", device.name().unwrap_or_default());
-
-        let config = cpal::StreamConfig {
-            channels: 1,
-            sample_rate: cpal::SampleRate(16_000),
-            buffer_size: cpal::BufferSize::Default,
-        };
-
-        let (cpal_tx, cpal_rx) = std::sync::mpsc::channel::<Vec<i16>>();
-        let error_flag = StdArc::new(Mutex::new(Option::<String>::None));
-        let error_flag_cb = StdArc::clone(&error_flag);
-
-        let stream = match device.build_input_stream(
-            &config,
-            move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                let _ = cpal_tx.send(data.to_vec());
-            },
-            move |err| {
-                *error_flag_cb.lock().unwrap() = Some(err.to_string());
-            },
-            None,
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = ready_tx.send(Err(anyhow::anyhow!("build_input_stream: {e}")));
-                return;
-            }
-        };
-
-        if let Err(e) = stream.play() {
-            let _ = ready_tx.send(Err(anyhow::anyhow!("stream.play: {e}")));
-            return;
+            tracing::error!("mic capture stream died; rebuilding in {backoff:?}");
+            std::thread::sleep(backoff);
+            backoff = (backoff * 2).min(std::time::Duration::from_secs(30));
         }
-
-        let _ = ready_tx.send(Ok(()));
-        let _stream = stream; // keep alive
-        vad_loop(cpal_rx, tx, error_flag);
     });
 
     // Wait for startup signal

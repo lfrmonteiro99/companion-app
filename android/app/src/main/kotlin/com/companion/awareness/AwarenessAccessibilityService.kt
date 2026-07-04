@@ -75,6 +75,11 @@ class AwarenessAccessibilityService : AccessibilityService() {
         connected = false
         instance.compareAndSet(this, null)
         latest.set(null)
+        // Also drop the cached screenshot: requestScreenshot() returns it
+        // when instance is null, so a stale a11y frame would otherwise be
+        // used by the vision path after a11y is disabled mid-session,
+        // shadowing the fresh MediaProjection frame.
+        latestBitmap.set(null)
         super.onDestroy()
     }
 

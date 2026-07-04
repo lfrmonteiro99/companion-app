@@ -35,6 +35,14 @@ class ScreenCapture(
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     private val latest = AtomicReference("")
 
+    // Latest captured frame, kept ONLY while vision is enabled (see
+    // setCacheFrames) so captureVisionPng can source an image in
+    // no-accessibility mode — where the a11y takeScreenshot API is absent.
+    // Off by default: holding a full-res bitmap per frame is wasteful when
+    // vision (opt-in, canvas-apps only) isn't in use.
+    private val latestBitmap = AtomicReference<Bitmap?>(null)
+    @Volatile private var cacheFrames = false
+
     fun start() {
         val mpm = ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val proj = mpm.getMediaProjection(resultCode, data)
@@ -98,6 +106,22 @@ class ScreenCapture(
             )
             bitmap.copyPixelsFromBuffer(buffer)
 
+            // Retain the frame for on-demand vision capture only when asked.
+            // We never recycle it — replaced references are GC'd — so a
+            // concurrent captureVisionPng() read can't hit a recycled bitmap.
+            // The OCR bitmap is allocated with the ImageReader row-stride
+            // padding as extra columns on the right; crop it to the true
+            // display width before caching so the vision model doesn't see a
+            // garbage edge strip / skewed aspect ratio.
+            if (cacheFrames) {
+                val frame = if (bitmap.width > image.width) {
+                    Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+                } else {
+                    bitmap
+                }
+                latestBitmap.set(frame)
+            }
+
             val input = InputImage.fromBitmap(bitmap, 0)
             recognizer.process(input)
                 .addOnSuccessListener { latest.set(it.text) }
@@ -108,10 +132,23 @@ class ScreenCapture(
 
     fun latestText(): String = latest.get().orEmpty()
 
+    /** Latest captured frame, or null when frame caching is off or no frame
+     *  has arrived yet. Used by the vision path in no-accessibility mode. */
+    fun latestFrame(): Bitmap? = latestBitmap.get()
+
+    /** Toggle retention of the latest frame. Turning it off frees the held
+     *  bitmap immediately so we don't keep a full-res frame around when
+     *  vision is disabled. */
+    fun setCacheFrames(on: Boolean) {
+        cacheFrames = on
+        if (!on) latestBitmap.set(null)
+    }
+
     fun stop() {
         virtualDisplay?.release()
         reader?.close()
         projection?.stop()
         recognizer.close()
+        latestBitmap.set(null)
     }
 }

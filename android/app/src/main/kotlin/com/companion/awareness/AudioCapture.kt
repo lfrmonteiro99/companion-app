@@ -120,8 +120,23 @@ class AudioCapture(private val ctx: Context) {
      *  lost when the recognizer returns onError instead of onResults. */
     private fun commitPartial() {
         val p = lastPartial?.takeIf { it.isNotBlank() }
-        if (p != null) queue.add(p)
+        if (p != null) enqueue(p)
         lastPartial = null
+    }
+
+    /**
+     * Queue a transcript unless we are (or just were) speaking our own TTS
+     * alert. The recognizer runs continuously and will happily transcribe
+     * the alert playing through the speaker; without this guard that text
+     * flows into the event → voice_activity/emotional → another alert →
+     * TTS again, a self-narration loop. No-op when TTS is idle/disabled.
+     */
+    private fun enqueue(text: String) {
+        if (Tts.isCapturingOwnVoice()) {
+            TraceLog.micStatus("dropped self-narration: ${text.take(60)}")
+            return
+        }
+        queue.add(text)
     }
 
     private fun errorName(code: Int): String = when (code) {
@@ -156,7 +171,7 @@ class AudioCapture(private val ctx: Context) {
         override fun onResults(results: Bundle?) {
             val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val best = list?.firstOrNull()?.takeIf { it.isNotBlank() }
-            if (best != null) queue.add(best)
+            if (best != null) enqueue(best)
             else commitPartial()
             lastPartial = null
             scheduleRestart()
